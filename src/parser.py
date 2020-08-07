@@ -9,7 +9,7 @@ import struct
 from datetime import datetime
 from enum import Enum
 from multiprocessing import Process, Pipe, connection
-from util import timing, func_times
+from util import timing
 
 
 # https://codeofwar.wbudziszewski.pl/2015/07/29/binary-savegames-insight/
@@ -40,14 +40,6 @@ types = {
     400: Types.FLOAT5
 }
 
-# meaning: [start_token, end_token, regex to split 1st level elements into]
-chunks = {
-    # regex: <str_type><str_len>XXX={<lazy_dot>country_missions={<lazy_dot>}}
-    "country": ["countries", "active_advisors",
-                b".{4}\w{3}\\\x01\\000\\\x03\\000.*?\\\t8\\\x01\\000\\\x03\\000.*?\\\x04\\000\\\x04\\000"],
-    "stats": ["income_statistics", None, b'']
-}
-
 
 def decode_date(n):
     year = -5000 + n / 24 / 365
@@ -76,7 +68,7 @@ class Parser:
         self.parsers = []
         self.parse_keys()
         self.curr_code = 0
-        self.curr_container = ClausewitzObjectContainer(self, name="master")
+        self.container = ClausewitzObjectContainer(name="master")
         self.funcs = {
             Types.EQ: self.assign,
             Types.LBR: self.open_object,
@@ -90,16 +82,26 @@ class Parser:
         }
 
     @timing
-    def search(self):
+    def search(self, chunks):
         """Searches for offsets of the chunks to parse inside the binary string"""
         b = self.stream.read()
-        for name, (s, e, pattern) in chunks.items():
+        for name, (s, e) in chunks.items():
             start = b"" if s is None else (self.keys[s]).to_bytes(2, 'little') + self.assign_t
             end = b"" if e is None else (self.keys[e]).to_bytes(2, 'little') + self.assign_t
             string = re.escape(start) + b".*" + re.escape(end)
             p = re.compile(string, flags=re.DOTALL)
             r = re.search(p, b)
-            stream = io.BytesIO(r.group()[:-6])  # excludes 'next_token={' from the match
+            match = r.group()
+            stream = io.BytesIO(match[:-6])  # excludes 'next_token={' from the match
+            # regex pattern used for multiprocessing
+            if name == 'country':
+                country_tag = b".{4}[A-Z0-9\-]{3}\\\x01\\000\\\x03\\000"  # <str_type><str_len>XXX={
+                # regex explanation: it uses positive lookahead to match until next country tag is found. For this
+                # reason, a dummy tag is added at the end of the string for the last match to succeed.
+                pattern = country_tag + b".*?(?:\\\x04\\000){2}(?=" + country_tag + b")"
+                stream = io.BytesIO(match[:-8] + b"xxxxFOO\x01\x00\x03\x00\x04\x00")
+            else:
+                pattern = None
             parser = Parser(stream=stream, pattern=pattern)
             parser.parse()
             self.parsers.append(parser)
@@ -116,13 +118,14 @@ class Parser:
                 while True:
                     self.read_code()
             except KeyError:
-                raise ValueError(f"Last object: {self.curr_container.objects[-1].name}")
+                raise ValueError(f"Last object: {self.container.objects[-1].name}")
             except struct.error:  # EOF
                 pass
         if self.connection:
-            # todo extract only relevant data, can't send back all object (too big and inneficient)
-            b = pickle.dumps(self.curr_container)
-            self.connection.send_bytes(b)
+            # todo extract only relevant data, can't send back all object (too big and inefficient)
+            # todo write a funciton that checks correctness of the parser
+            # with the emperor version, the chunks of the processes have different size, is this correct?
+            print(self.container.objects)
             self.connection.close()
 
     def parse_parallel(self):
@@ -134,14 +137,14 @@ class Parser:
         ls = np.array(matches, dtype=np.object_)
         for i, group in enumerate(np.array_split(ls, self.chunks)):
             chunk = b''.join(group)
-            self.parsers.append(Parser(io.BytesIO(chunk)))
+            self.parsers.append(Parser(stream=io.BytesIO(chunk)))
         self.launch_processes()
         self.close_object()
 
     def update(self, p):
         """Updates this parser with the information from another"""
-        self.curr_container.objects.extend(p.curr_container.objects)
-        self.curr_container.map.update(p.curr_container.map)
+        self.container.objects.extend(p.curr_container.objects)
+        self.container.map.update(p.curr_container.map)
 
     def launch_processes(self):
         processes = []
@@ -153,23 +156,17 @@ class Parser:
             processes.append(Process(target=p.parse, args=(w,)))
             processes[-1].start()
             w.close()
-        msgs = []
         while readers:
             for r in connection.wait(readers):
                 try:
                     msg = r.recv_bytes()
-                    msgs.append(msg)
+                    # todo process received message
                 except EOFError:
                     readers.remove(r)
-                else:
-                    pass
+                    r.close()
+
         for p in processes:
             p.terminate()
-        for r in readers:
-            print(r.poll())
-        for m in msgs:
-            o = pickle.loads(m)
-            print(o)
 
     def parse_keys(self):
         if self.keys:
@@ -191,19 +188,19 @@ class Parser:
         return self.funcs[t]()
 
     def assign(self):
-        name = self.curr_container.objects.pop().value
+        name = self.container.objects.pop().value
         self.read_code()
         try:
-            self.curr_container.name_last(name)
+            self.container.name_last(name)
         except IndexError:
-            self.curr_container.parent.name_last(name)
+            self.container.parent.name_last(name)
 
     def open_object(self):
-        self.curr_container = ClausewitzObjectContainer(self, parent=self.curr_container)
-        self.curr_container.parent.objects.append(self.curr_container)
+        self.container = ClausewitzObjectContainer(parent=self.container)
+        self.container.parent.objects.append(self.container)
 
     def close_object(self):
-        self.curr_container = self.curr_container.parent
+        self.container = self.container.parent
 
     def read_int(self):
         v = self.unpack_data(4, "I")
@@ -231,26 +228,31 @@ class Parser:
 
     def save_data(self, v):
         o = ClausewitzObject(v)
-        self.curr_container.objects.append(o)
+        self.container.objects.append(o)
 
     def unpack_data(self, size, ft):
         return struct.unpack(ft, self.stream.read(size))[0]
 
     @classmethod
     def from_zip(cls, filename):
+        chunks = {
+            "country": ["countries", "active_advisors"],
+            "stats": ["income_statistics", None]
+        }
         with ZipFile(filename) as zf:
             with zf.open('meta') as f:
                 meta = cls(stream=f)
                 meta.parse(read_header=True)
             with zf.open('gamestate') as f:
-                parser = cls(stream=f)
-                parser.search()
-        return parser
+                gamestate = cls(stream=f)
+                # gamestate.parse(read_header=True)
+                gamestate.search(chunks)
+        # todo join info
+        return gamestate
 
 
 class ClausewitzObjectContainer:
-    def __init__(self, parser, name="", parent=None):
-        self.parser = parser
+    def __init__(self, name="", parent=None):
         self.name = name
         self.map = {}
         self.objects = []
@@ -285,8 +287,4 @@ class ClausewitzObject:
 
 
 if __name__ == '__main__':
-    # with open("src/Assets/binary.eu4", "rb") as f:
-    #     p = Parser(f)
-    #     p.search()
-    #     print(func_times, len(p.curr_container.objects))
-    p = Parser.from_zip("src/Assets/dharma.eu4")
+    p = Parser.from_zip("src/Assets/emperor.eu4")
