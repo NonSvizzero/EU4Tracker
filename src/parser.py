@@ -95,10 +95,11 @@ class Parser:
             stream = io.BytesIO(match[:-6])  # excludes 'next_token={' from the match
             # regex pattern used for multiprocessing
             if name == 'country':
-                country_tag = b".{4}[A-Z0-9\-]{3}\\\x01\\000\\\x03\\000"  # <str_type><str_len>XXX={
+                tag = b".{4}[A-Z0-9\-]{3}\\\x01\\000\\\x03\\000"  # <str_type><str_len>XXX={
                 # regex explanation: it uses positive lookahead to match until next country tag is found. For this
-                # reason, a dummy tag is added at the end of the string for the last match to succeed.
-                pattern = country_tag + b".*?(?:\\\x04\\000){2}(?=" + country_tag + b")"
+                # reason, a dummy tag is added at the end of the string for the last match to succeed. The end of a
+                # country section it's either '}}' or 'government_reform_progress=<int>bbbb}'
+                pattern = tag + b".*?(?:(?:\\\x04\\000){2,}|\\ 8\\\x01\\000.{6}\\\x04\\000)(?=" + tag + b")"
                 stream = io.BytesIO(match[:-8] + b"xxxxFOO\x01\x00\x03\x00\x04\x00")
             else:
                 pattern = None
@@ -123,9 +124,6 @@ class Parser:
                 pass
         if self.connection:
             # todo extract only relevant data, can't send back all object (too big and inefficient)
-            # todo write a funciton that checks correctness of the parser
-            # with the emperor version, the chunks of the processes have different size, is this correct?
-            print(self.container.objects)
             self.connection.close()
 
     def parse_parallel(self):
@@ -135,7 +133,7 @@ class Parser:
         content = self.stream.read()[:-2]  # leaves out closing bracket
         matches = re.findall(self.pattern, content, flags=re.DOTALL)
         ls = np.array(matches, dtype=np.object_)
-        for i, group in enumerate(np.array_split(ls, self.chunks)):
+        for group in np.array_split(ls, self.chunks):
             chunk = b''.join(group)
             self.parsers.append(Parser(stream=io.BytesIO(chunk)))
         self.launch_processes()
