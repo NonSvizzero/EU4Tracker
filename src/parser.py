@@ -1,6 +1,6 @@
 import calendar
 import io
-from threading import Thread
+import pickle
 from zipfile import ZipFile
 
 import numpy as np
@@ -43,7 +43,6 @@ types = {
 # meaning: [start_token, end_token, regex to split 1st level elements into]
 chunks = {
     # regex: <str_type><str_len>XXX={<lazy_dot>country_missions={<lazy_dot>}}
-    # fixme in newer versions these finish with the 'country_missions' attribute, maybe match }}} at the end?
     "country": ["countries", "active_advisors",
                 b".{4}\w{3}\\\x01\\000\\\x03\\000.*?\\\t8\\\x01\\000\\\x03\\000.*?\\\x04\\000\\\x04\\000"],
     "stats": ["income_statistics", None, b'']
@@ -102,8 +101,8 @@ class Parser:
             r = re.search(p, b)
             stream = io.BytesIO(r.group()[:-6])  # excludes 'next_token={' from the match
             parser = Parser(stream=stream, pattern=pattern)
+            parser.parse()
             self.parsers.append(parser)
-        self.launch_processes()
 
     @timing
     def parse(self, connection=None, read_header=False):
@@ -118,11 +117,12 @@ class Parser:
                     self.read_code()
             except KeyError:
                 raise ValueError(f"Last object: {self.curr_container.objects[-1].name}")
-            except struct.error:
+            except struct.error:  # EOF
                 pass
         if self.connection:
             # todo extract only relevant data, can't send back all object (too big and inneficient)
-            self.connection.send_bytes(b'0')
+            b = pickle.dumps(self.curr_container)
+            self.connection.send_bytes(b)
             self.connection.close()
 
     def parse_parallel(self):
@@ -153,19 +153,23 @@ class Parser:
             processes.append(Process(target=p.parse, args=(w,)))
             processes[-1].start()
             w.close()
+        msgs = []
         while readers:
             for r in connection.wait(readers):
                 try:
                     msg = r.recv_bytes()
-                    # p = pickle.loads(msg) fixme this is inefficient
-                    # self.update(p)
+                    msgs.append(msg)
                 except EOFError:
-                    r.close()
                     readers.remove(r)
                 else:
                     pass
         for p in processes:
-            p.join()
+            p.terminate()
+        for r in readers:
+            print(r.poll())
+        for m in msgs:
+            o = pickle.loads(m)
+            print(o)
 
     def parse_keys(self):
         if self.keys:
