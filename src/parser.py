@@ -23,7 +23,8 @@ class Types(Enum):
     BOOL = 6
     FLOAT5 = 7
     STR = 8
-    KEY = 9
+    DATE = 9
+    KEY = 10
 
 
 types = {
@@ -39,21 +40,6 @@ types = {
     359: Types.FLOAT5,
     400: Types.FLOAT5
 }
-
-
-def decode_date(n):
-    year = -5000 + n / 24 / 365
-    day = 1 + n / 24 % 365
-    month = 1
-    for m in range(12):
-        _, month_length = calendar.monthrange(2015, m)
-        if day > month_length:
-            day -= month_length
-            month += 1
-        else:
-            break
-
-    return datetime(year, month, day)
 
 
 class Parser:
@@ -73,6 +59,7 @@ class Parser:
             Types.EQ: self.assign,
             Types.LBR: self.open_object,
             Types.RBR: self.close_object,
+            Types.DATE: self.read_date,
             Types.INT: self.read_int,
             Types.FLOAT: self.read_float,
             Types.BOOL: self.read_bool,
@@ -122,9 +109,7 @@ class Parser:
                 pass
         if self.connection:
             # todo extract only relevant data, can't send back all object (too big and inefficient)
-            history = self.container.popitem()[1].get("history", None)
-            if history:
-                self.connection.send_bytes(pickle.dumps(history))
+            self.connection.send_bytes(pickle.dumps(self.container.popitem()))
             self.connection.close()
 
     def parse_parallel(self):
@@ -164,7 +149,7 @@ class Parser:
             p.terminate()
         for m in msgs:
             # todo parse messages
-            # p = pickle.loads(m)
+            tag, country = pickle.loads(m)
             # print(list(p.keys()))
             pass
 
@@ -198,6 +183,29 @@ class Parser:
     def close_object(self):
         self.container.close()
         self.container = self.container.parent
+
+    def read_date(self):
+        """https://gitgud.io/nixx/paperman/-/blob/master/paperman/src/Util/numberToDate.ts"""
+        n = self.unpack_data(4, "I")
+        zero_date = 43800000
+        if n < zero_date:
+            if n == 43791240:
+                v = '-1.1.1'
+            else:
+                v = str(n)
+        else:
+            year, n = divmod(n - zero_date, 24 * 365)
+            month = day = 1
+            for m in range(1, 12):
+                _, month_length = calendar.monthrange(1995, m)
+                if n >= month_length:
+                    n -= month_length
+                    month += 1
+                else:
+                    day += n
+                    break
+            v = f"{year}.{month}.{day}"
+        self.save_data(v)
 
     def read_int(self):
         v = self.unpack_data(4, "I")
@@ -237,7 +245,6 @@ class Parser:
     @classmethod
     def from_zip(cls, filename):
         chunks = {
-            "pre": [None, "countries"],
             "country": ["countries", "active_advisors"],
             "stats": ["income_statistics", None]
         }
@@ -283,4 +290,4 @@ class ClausewitzObjectContainer(dict):
 
 
 if __name__ == '__main__':
-    p = Parser.from_zip("src/Assets/emperor.eu4")
+    p = Parser.from_zip("src/Assets/dharma.eu4")
