@@ -68,7 +68,7 @@ class Parser:
         self.parsers = []
         self.parse_keys()
         self.curr_code = 0
-        self.container = ClausewitzObjectContainer(name="master")
+        self.container = ClausewitzObjectContainer()
         self.funcs = {
             Types.EQ: self.assign,
             Types.LBR: self.open_object,
@@ -93,12 +93,12 @@ class Parser:
             r = re.search(p, b)
             match = r.group()
             stream = io.BytesIO(match[:-6])  # excludes 'next_token={' from the match
-            # regex pattern used for multiprocessing
+            # regex pattern used for multiprocessing  TODO pattern for provinces
             if name == 'country':
                 tag = b".{4}[A-Z0-9\-]{3}\\\x01\\000\\\x03\\000"  # <str_type><str_len>XXX={
                 # regex explanation: it uses positive lookahead to match until next country tag is found. For this
                 # reason, a dummy tag is added at the end of the string for the last match to succeed. The end of a
-                # country section it's either '}}' or 'government_reform_progress=<int>bbbb}'
+                # country section is either '}}' or 'government_reform_progress=<int>bbbb}'
                 pattern = tag + b".*?(?:(?:\\\x04\\000){2,}|\\ 8\\\x01\\000.{6}\\\x04\\000)(?=" + tag + b")"
                 stream = io.BytesIO(match[:-8] + b"xxxxFOO\x01\x00\x03\x00\x04\x00")
             else:
@@ -118,16 +118,18 @@ class Parser:
             try:
                 while True:
                     self.read_code()
-            except KeyError:
-                raise ValueError(f"Last object: {self.container.objects[-1].name}")
             except struct.error:  # EOF
                 pass
         if self.connection:
             # todo extract only relevant data, can't send back all object (too big and inefficient)
+            history = self.container.popitem()[1].get("history", None)
+            if history:
+                self.connection.send_bytes(pickle.dumps(history))
             self.connection.close()
 
     def parse_parallel(self):
-        """Uses multiproc to parse a big top-level object faster by splitting the content in chunks"""
+        """Uses multiproc to parse a big top-level object faster by splitting the content in chunks and spawning
+        workers"""
         self.read_code()  # read token
         self.read_code()  # read '={'
         content = self.stream.read()[:-2]  # leaves out closing bracket
@@ -139,14 +141,10 @@ class Parser:
         self.launch_processes()
         self.close_object()
 
-    def update(self, p):
-        """Updates this parser with the information from another"""
-        self.container.objects.extend(p.curr_container.objects)
-        self.container.map.update(p.curr_container.map)
-
     def launch_processes(self):
         processes = []
         readers = []
+        msgs = []
         for p in self.parsers:
             r, w = Pipe(duplex=False)
             readers.append(r)
@@ -157,14 +155,18 @@ class Parser:
         while readers:
             for r in connection.wait(readers):
                 try:
-                    msg = r.recv_bytes()
-                    # todo process received message
+                    msgs.append(r.recv_bytes())
                 except EOFError:
                     readers.remove(r)
                     r.close()
 
         for p in processes:
             p.terminate()
+        for m in msgs:
+            # todo parse messages
+            # p = pickle.loads(m)
+            # print(list(p.keys()))
+            pass
 
     def parse_keys(self):
         if self.keys:
@@ -186,18 +188,15 @@ class Parser:
         return self.funcs[t]()
 
     def assign(self):
-        name = self.container.objects.pop().value
         self.read_code()
-        try:
-            self.container.name_last(name)
-        except IndexError:
-            self.container.parent.name_last(name)
+        self.container.name_last()
 
     def open_object(self):
         self.container = ClausewitzObjectContainer(parent=self.container)
-        self.container.parent.objects.append(self.container)
+        self.container.parent.append(self.container)
 
     def close_object(self):
+        self.container.close()
         self.container = self.container.parent
 
     def read_int(self):
@@ -222,11 +221,15 @@ class Parser:
         self.save_data(v)
 
     def read_key(self):
-        self.save_data(self.keys[self.curr_code])
+        try:
+            self.save_data(self.keys[self.curr_code])
+        except KeyError:
+            k = f"unknown_key_{hex(self.curr_code)}"
+            print(k)
+            self.save_data(k)
 
     def save_data(self, v):
-        o = ClausewitzObject(v)
-        self.container.objects.append(o)
+        self.container.append(v)
 
     def unpack_data(self, size, ft):
         return struct.unpack(ft, self.stream.read(size))[0]
@@ -234,6 +237,7 @@ class Parser:
     @classmethod
     def from_zip(cls, filename):
         chunks = {
+            "pre": [None, "countries"],
             "country": ["countries", "active_advisors"],
             "stats": ["income_statistics", None]
         }
@@ -249,39 +253,33 @@ class Parser:
         return gamestate
 
 
-class ClausewitzObjectContainer:
-    def __init__(self, name="", parent=None):
-        self.name = name
-        self.map = {}
-        self.objects = []
+class ClausewitzObjectContainer(dict):
+    """This is a dictionary that also behaves like a list in case the container does not have any assignments inside it,
+     using an integer index for keys. Integer keys are also used to temporary store unnamed elements before an assign
+     operation is executed."""
+
+    def __init__(self, parent=None, **kwargs):
+        super().__init__(**kwargs)
         self.parent = parent
+        self.i = 0
 
-    def __repr__(self):
-        return self.name
+    def append(self, item):
+        self[self.i] = item
+        self.i += 1
 
-    def __getitem__(self, item):
-        return self.map[item]
+    def close(self):
+        if any(isinstance(k, str) for k in self.keys()):
+            del self[0]
+            del self[1]
 
-    def name_last(self, name):
-        last = self.objects[-1]
-        last.name = name
-        self.map[name] = last
-
-
-class ClausewitzObject:
-    def __init__(self, value):
-        self.name = None
-        self.value = value
-        # todo recognize dates
-
-    def __str__(self):
-        if self.name:
-            return f"{self.name}={self.value}"
-        else:
-            return str(self.value)
-
-    def __repr__(self):
-        return self.__str__()
+    def name_last(self):
+        try:
+            name = self[self.i - 2]
+            value = self[self.i - 1]
+            self[name] = value
+            self.i -= 2
+        except KeyError:
+            self.parent.name_last()
 
 
 if __name__ == '__main__':

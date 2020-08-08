@@ -5069,7 +5069,6 @@
 0x38d7 full_dump
 0x38d8 enacted_parliament_issue
 0x38d9 tracked_events
-0x38da unknown_key_0x38da
 0x38db reason
 0x38dc monthly_support_heir_gain
 0x38dd power_projection_from_insults
