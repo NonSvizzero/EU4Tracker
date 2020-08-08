@@ -6,7 +6,6 @@ from zipfile import ZipFile
 import numpy as np
 import re
 import struct
-from datetime import datetime
 from enum import Enum
 from multiprocessing import Process, Pipe, connection
 from util import timing
@@ -31,7 +30,7 @@ types = {
     1: Types.EQ,
     3: Types.LBR,
     4: Types.RBR,
-    12: Types.INT,  # todo is this always a date? find difference between int and date
+    12: Types.DATE,  # todo is this always a date? find difference between int and date
     13: Types.FLOAT,
     14: Types.BOOL,
     15: Types.STR,
@@ -109,7 +108,9 @@ class Parser:
                 pass
         if self.connection:
             # todo extract only relevant data, can't send back all object (too big and inefficient)
-            self.connection.send_bytes(pickle.dumps(self.container.popitem()))
+            country = self.container.get("TYR", None)
+            if country:
+                self.connection.send_bytes(pickle.dumps(country))
             self.connection.close()
 
     def parse_parallel(self):
@@ -149,7 +150,7 @@ class Parser:
             p.terminate()
         for m in msgs:
             # todo parse messages
-            tag, country = pickle.loads(m)
+            country = pickle.loads(m)
             # print(list(p.keys()))
             pass
 
@@ -161,11 +162,8 @@ class Parser:
                 k, v = line.split()
                 k = int(k, 16)
                 v = v.rstrip()
-                if k not in types:
-                    self.keys[k] = v
-                    self.keys[v] = k
-                else:
-                    print(f"Meaning of key {hex(k)}: {v}")
+                self.keys[k] = v
+                self.keys[v] = k
 
     def read_code(self):
         self.curr_code = self.unpack_data(2, '<H')
@@ -173,8 +171,9 @@ class Parser:
         return self.funcs[t]()
 
     def assign(self):
+        # todo read boolean here and save it to pass it later
         self.read_code()
-        self.container.name_last()
+        self.container.name_last()  # todo need to pass the boolean here to
 
     def open_object(self):
         self.container = ClausewitzObjectContainer(parent=self.container)
@@ -186,13 +185,14 @@ class Parser:
 
     def read_date(self):
         """https://gitgud.io/nixx/paperman/-/blob/master/paperman/src/Util/numberToDate.ts"""
+        # todo reverse this and store a map {int: date} pre-calculated so that this can return in O(1)
         n = self.unpack_data(4, "I")
-        zero_date = 43800000
+        zero_date = 43800000  # year 0. only 1.1.1 seems to be used in years between 0 and ~1300
         if n < zero_date:
             if n == 43791240:
                 v = '-1.1.1'
             else:
-                v = str(n)
+                v = n
         else:
             year, n = divmod(n - zero_date, 24 * 365)
             month = day = 1
@@ -234,7 +234,9 @@ class Parser:
         except KeyError:
             k = f"unknown_key_{hex(self.curr_code)}"
             print(k)
+            self.keys[self.curr_code] = k
             self.save_data(k)
+        # todo save boolean here whether to keep the key or drop it (whitelist)
 
     def save_data(self, v):
         self.container.append(v)
@@ -252,6 +254,7 @@ class Parser:
             with zf.open('meta') as f:
                 meta = cls(stream=f)
                 meta.parse(read_header=True)
+            print(meta.container)
             with zf.open('gamestate') as f:
                 gamestate = cls(stream=f)
                 # gamestate.parse(read_header=True)
@@ -263,12 +266,16 @@ class Parser:
 class ClausewitzObjectContainer(dict):
     """This is a dictionary that also behaves like a list in case the container does not have any assignments inside it,
      using an integer index for keys. Integer keys are also used to temporary store unnamed elements before an assign
-     operation is executed."""
+     operation is executed. Since sometimes the same key is repeated, when the object is closed it will fix duplicate
+     keys by putting them inside another container. E.g. the 'advisor' key will be repeated 3 times, when the object is
+     closed it will contain 'advisors'={0: {...}, 1: {...}, 2: {...}}"""
 
     def __init__(self, parent=None, **kwargs):
         super().__init__(**kwargs)
         self.parent = parent
         self.i = 0
+        self.duplicate_keys = set()
+        self.drop_keys = set()
 
     def append(self, item):
         self[self.i] = item
@@ -278,16 +285,41 @@ class ClausewitzObjectContainer(dict):
         if any(isinstance(k, str) for k in self.keys()):
             del self[0]
             del self[1]
+        for key in self.duplicate_keys:
+            group_key = key
+            while group_key in self:  # estate -> estates and keeps adding 's' to avoid overwriting
+                group_key += 's'
+            self[group_key] = ClausewitzObjectContainer(parent=self)
+            current = key
+            while current in self:
+                item = self[current]
+                try:
+                    item.parent = self[group_key]
+                except AttributeError:
+                    pass
+                self[group_key].append(item)
+                del self[current]
+                current += ' '
+        self.duplicate_keys.clear()
 
-    def name_last(self):
+    def name_last(self, drop=False):
         try:
             name = self[self.i - 2]
             value = self[self.i - 1]
+            if name in self and isinstance(name, str):
+                self.duplicate_keys.add(name)
+                while name in self:
+                    name += ' '
             self[name] = value
             self.i -= 2
+            if drop:
+                self.drop_keys.add(name)
         except KeyError:
-            self.parent.name_last()
+            self.parent.name_last(drop=drop)
+
+    def to_json(self):
+        pass  # todo convert object to list if needed, use json.dumps
 
 
 if __name__ == '__main__':
-    p = Parser.from_zip("src/Assets/dharma.eu4")
+    p = Parser.from_zip("src/Assets/emperor.eu4")
