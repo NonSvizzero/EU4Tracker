@@ -1,6 +1,7 @@
 import calendar
 import io
 import pickle
+from time import time
 from zipfile import ZipFile
 
 import numpy as np
@@ -77,21 +78,31 @@ class Parser:
             string = re.escape(start) + b".*" + re.escape(end)
             p = re.compile(string, flags=re.DOTALL)
             r = re.search(p, b)
+            print(f"Parsing {name}")
+            s, e = r.span()
+            b = b[:s] + b[e-6:]  # removes matched section to avoid overlapping in subsequent matches
             match = r.group()
             stream = io.BytesIO(match[:-6])  # excludes 'next_token={' from the match
-            # regex pattern used for multiprocessing  TODO pattern for provinces
+            # regex pattern used for multiprocessing
             if name == 'country':
-                tag = b".{4}[A-Z0-9\-]{3}\\\x01\\000\\\x03\\000"  # <str_type><str_len>XXX={
                 # regex explanation: it uses positive lookahead to match until next country tag is found. For this
                 # reason, a dummy tag is added at the end of the string for the last match to succeed. The end of a
                 # country section is either '}}' or 'government_reform_progress=<int>bbbb}'
+                tag = b".{4}[A-Z0-9\-]{3}\\\x01\\000\\\x03\\000"  # <str_type><str_len>XXX={
                 pattern = tag + b".*?(?:(?:\\\x04\\000){2,}|\\ 8\\\x01\\000.{6}\\\x04\\000)(?=" + tag + b")"
                 stream = io.BytesIO(match[:-8] + b"xxxxFOO\x01\x00\x03\x00\x04\x00")
+            elif name == 'province':
+                # same concept as above, last keys now are either "center_of_trade" or "last_looted"
+                # fixme do centers of reform/revolution break this?
+                tag = b'\x0c\x00.{4}\x01\x00\x03\x00'  # <int_type><4_int_bytes>={
+                pattern = tag + b".*?(?:(?:\\\x04\\000){2,}|(?:u1|\\\x9a8)\\\x01\\000.{6}\\\x04\\000)(?=" + tag + b")"
+                stream = io.BytesIO(match[:-8] + b'.' * 10 + b"ttIIII\x01\x00\x03\x00\x04\x00")
             else:
                 pattern = None
             parser = Parser(stream=stream, pattern=pattern)
-            parser.parse()
-            self.parsers.append(parser)
+            parser.parse(read_header=name == 'start')
+            self.parsers.append(parser)  # todo join results
+        print(f"Search concluded, save file successfully parsed!")
 
     @timing
     def parse(self, connection=None, read_header=False):
@@ -105,12 +116,9 @@ class Parser:
                 while True:
                     self.read_code()
             except struct.error:  # EOF
-                pass
+                self.container.close()
         if self.connection:
             # todo extract only relevant data, can't send back all object (too big and inefficient)
-            country = self.container.get("TYR", None)
-            if country:
-                self.connection.send_bytes(pickle.dumps(country))
             self.connection.close()
 
     def parse_parallel(self):
@@ -150,7 +158,7 @@ class Parser:
             p.terminate()
         for m in msgs:
             # todo parse messages
-            country = pickle.loads(m)
+            # country = pickle.loads(m)
             # print(list(p.keys()))
             pass
 
@@ -186,7 +194,7 @@ class Parser:
     def read_date(self):
         """https://gitgud.io/nixx/paperman/-/blob/master/paperman/src/Util/numberToDate.ts"""
         # todo reverse this and store a map {int: date} pre-calculated so that this can return in O(1)
-        n = self.unpack_data(4, "I")
+        n = self.unpack_data(4, "i")
         zero_date = 43800000  # year 0. only 1.1.1 seems to be used in years between 0 and ~1300
         if n < zero_date:
             if n == 43791240:
@@ -208,11 +216,11 @@ class Parser:
         self.save_data(v)
 
     def read_int(self):
-        v = self.unpack_data(4, "I")
+        v = self.unpack_data(4, "i")
         self.save_data(v)
 
     def read_float(self):
-        v = self.unpack_data(4, "I")
+        v = self.unpack_data(4, "i")
         self.save_data(v / 1000)
 
     def read_bool(self):
@@ -220,11 +228,11 @@ class Parser:
         self.save_data(v)
 
     def read_float5(self):
-        v = self.unpack_data(8, 'Q')
+        v = self.unpack_data(8, 'q')
         self.save_data(v / 32768)
 
     def read_string(self):
-        length = self.unpack_data(2, "H")
+        length = self.unpack_data(2, "h")
         v = self.stream.read(length).decode('windows-1252')
         self.save_data(v)
 
@@ -247,18 +255,20 @@ class Parser:
     @classmethod
     def from_zip(cls, filename):
         chunks = {
+            "start": [None, "religions"],
+            "province": ["provinces", "countries"],
             "country": ["countries", "active_advisors"],
             "stats": ["income_statistics", None]
         }
         with ZipFile(filename) as zf:
-            with zf.open('meta') as f:
-                meta = cls(stream=f)
-                meta.parse(read_header=True)
-            print(meta.container)
+            # with zf.open('meta') as f:
+            #     meta = cls(stream=f)
+            #     meta.parse(read_header=True)
+            # print(meta.container)
             with zf.open('gamestate') as f:
                 gamestate = cls(stream=f)
-                # gamestate.parse(read_header=True)
                 gamestate.search(chunks)
+                # gamestate.parse(read_header=True)
         # todo join info
         return gamestate
 
@@ -323,3 +333,4 @@ class ClausewitzObjectContainer(dict):
 
 if __name__ == '__main__':
     p = Parser.from_zip("src/Assets/emperor.eu4")
+    # todo write unit tests
