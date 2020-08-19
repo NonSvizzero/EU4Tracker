@@ -1,0 +1,94 @@
+key,description
+id,
+date,
+countries,
+human,
+was_human,
+institutions,"list of institutions: 0 not embraced, 1 embraced"
+history,
+primary_culture,
+religion,
+monarch,
+monarch_heir,
+heir,
+queen,
+name,used for monarch names
+DIP,used for monarch stats
+ADM,
+MIL,
+dynasty,
+personalities,
+type,"leader type, estate type, .."
+leader,
+fire,
+shock,
+siege,
+personality,
+birth_date,
+death_date,
+national_focus,
+capital,appears in history when capital is moved
+trade_port,trade capital
+development,dev scaled by autonomy?
+raw_development,total dev
+capped_development,?
+realm_development,same as development?
+used_governing_capacity,
+colors,
+map_color,
+religion,
+technology,
+adm_tech,
+dip_tech,
+mil_tech,
+estate,container
+loyalty,
+territory,% of land controlled by estate
+influence_modifier,
+granted_privileges,"seem to be type_privilege_name. no value present, need to build db"
+active_influences,?
+rival,
+current_power_projection,
+great_power_score,
+num_owned_home_cores,
+average_autonomy,
+average_autonomy_above_min,
+subjects,
+allies,
+prestige,
+stability,
+treasury,
+estimated_monthly_income,
+inflation,
+owned_provinces,
+controlled_provinces,
+core_provinces,
+army_tradition,
+navy_tradition,
+ledger,
+income,array with the various voices for income
+expense,
+loan_size,
+estimated_loan,
+religious_unity,
+devotion,
+meritocracy,
+papal_influence,
+legitimacy,
+mercantilism,
+splendor,
+army_professionalism,
+active_idea_groups,
+advisor,
+government,
+reform_stack,
+reforms,
+sub_unit,list of unit types chosen / available
+adm_spent_indexed,?
+dip_spent_indexed,?
+mil_spent_indexed,?
+innovativeness,
+completed_missions,
+country_missions,
+mission_slot,
+government_reform_progress,

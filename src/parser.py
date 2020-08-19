@@ -1,14 +1,16 @@
 import calendar
+import csv
 import io
-import pickle
-from time import time
+import json
+import os
+import uuid
 from zipfile import ZipFile
 
 import numpy as np
 import re
 import struct
 from enum import Enum
-from multiprocessing import Process, Pipe, connection
+from multiprocessing import Process
 from util import timing
 
 
@@ -44,17 +46,20 @@ types = {
 
 class Parser:
     keys = {}
+    whitelist = set()
     assign_t = b'\x01\x00\x03\x00'  # '={' as encoded by Clausewitz
     chunks = 8
 
-    def __init__(self, stream, pattern=None):
+    def __init__(self, stream, filename=None, pattern=None):
         self.stream = stream
+        self.filename = filename
         self.pattern = pattern
         self.connection = None
         self.parsers = []
-        self.parse_keys()
+        self.init()
         self.curr_code = 0
         self.container = ClausewitzObjectContainer()
+        self.last_is_key = False  # boolean used to drop unnecessary keys
         self.funcs = {
             Types.EQ: self.assign,
             Types.LBR: self.open_object,
@@ -68,6 +73,20 @@ class Parser:
             Types.KEY: self.read_key
         }
 
+    def init(self):
+        if self.keys:
+            return
+        with open("src/Assets/keys.txt") as f:
+            for line in f.readlines():
+                k, v = line.split()
+                k = int(k, 16)
+                v = v.rstrip()
+                self.keys[k] = v
+                self.keys[v] = k
+        with open("src/Assets/keys_whitelist.csv") as f:
+            r = csv.reader(f)
+            self.whitelist.update({k for k, d in r})
+
     @timing
     def search(self, chunks):
         """Searches for offsets of the chunks to parse inside the binary string"""
@@ -80,7 +99,7 @@ class Parser:
             r = re.search(p, b)
             print(f"Parsing {name}")
             s, e = r.span()
-            b = b[:s] + b[e-6:]  # removes matched section to avoid overlapping in subsequent matches
+            b = b[:s] + b[e - 6:]  # removes matched section to avoid overlapping in subsequent matches
             match = r.group()
             stream = io.BytesIO(match[:-6])  # excludes 'next_token={' from the match
             # regex pattern used for multiprocessing
@@ -101,14 +120,15 @@ class Parser:
                 pattern = None
             parser = Parser(stream=stream, pattern=pattern)
             parser.parse(read_header=name == 'start')
-            self.parsers.append(parser)  # todo join results
+            self.parsers.append(parser)
+        for parser in self.parsers:
+            self.container.update(parser.container)
         print(f"Search concluded, save file successfully parsed!")
 
     @timing
-    def parse(self, connection=None, read_header=False):
+    def parse(self, read_header=False):
         if read_header:
             assert self.stream.read(6) == b'EU4bin'
-        self.connection = connection
         if self.pattern:
             self.parse_parallel()
         else:
@@ -117,12 +137,12 @@ class Parser:
                     self.read_code()
             except struct.error:  # EOF
                 self.container.close()
-        if self.connection:
-            # todo extract only relevant data, can't send back all object (too big and inefficient)
-            self.connection.close()
+                if self.filename:
+                    with open(self.filename, 'w') as f:
+                        json.dump(self.container, f)
 
     def parse_parallel(self):
-        """Uses multiproc to parse a big top-level object faster by splitting the content in chunks and spawning
+        """Uses multiprocessing to parse a big top-level object faster by splitting the content in chunks and spawning
         workers"""
         self.read_code()  # read token
         self.read_code()  # read '={'
@@ -131,57 +151,33 @@ class Parser:
         ls = np.array(matches, dtype=np.object_)
         for group in np.array_split(ls, self.chunks):
             chunk = b''.join(group)
-            self.parsers.append(Parser(stream=io.BytesIO(chunk)))
-        self.launch_processes()
-        self.close_object()
-
-    def launch_processes(self):
+            self.parsers.append(Parser(stream=io.BytesIO(chunk), filename=str(uuid.uuid4())))
         processes = []
-        readers = []
-        msgs = []
-        for p in self.parsers:
-            r, w = Pipe(duplex=False)
-            readers.append(r)
-            p.connection = w
-            processes.append(Process(target=p.parse, args=(w,)))
+        for parser in self.parsers:
+            processes.append(Process(target=parser.parse))
             processes[-1].start()
-            w.close()
-        while readers:
-            for r in connection.wait(readers):
-                try:
-                    msgs.append(r.recv_bytes())
-                except EOFError:
-                    readers.remove(r)
-                    r.close()
-
-        for p in processes:
-            p.terminate()
-        for m in msgs:
-            # todo parse messages
-            # country = pickle.loads(m)
-            # print(list(p.keys()))
-            pass
-
-    def parse_keys(self):
-        if self.keys:
-            return
-        with open("src/Assets/keys.txt") as f:
-            for line in f.readlines():
-                k, v = line.split()
-                k = int(k, 16)
-                v = v.rstrip()
-                self.keys[k] = v
-                self.keys[v] = k
+        for process in processes:
+            process.join()
+        self.close_object()
+        for parser in self.parsers:
+            with open(parser.filename) as f:
+                d = json.load(f)
+                self.container[1].update(d)
+            os.remove(parser.filename)
+        self.container[self.container[0]] = self.container[1]
+        del self.container[0]
+        del self.container[1]
 
     def read_code(self):
         self.curr_code = self.unpack_data(2, '<H')
         t = types.get(self.curr_code, Types.KEY)
-        return self.funcs[t]()
+        self.funcs[t]()
+        self.last_is_key = t is Types.KEY
 
     def assign(self):
-        # todo read boolean here and save it to pass it later
+        drop = self.last_is_key and self.container.get_last() not in self.whitelist
         self.read_code()
-        self.container.name_last()  # todo need to pass the boolean here to
+        self.container.name_last(drop=drop)
 
     def open_object(self):
         self.container = ClausewitzObjectContainer(parent=self.container)
@@ -193,16 +189,17 @@ class Parser:
 
     def read_date(self):
         """https://gitgud.io/nixx/paperman/-/blob/master/paperman/src/Util/numberToDate.ts"""
-        # todo reverse this and store a map {int: date} pre-calculated so that this can return in O(1)
+        # todo reverse this and store a map {int: date} pre-calculated so that this can return without calculations
         n = self.unpack_data(4, "i")
         zero_date = 43800000  # year 0. only 1.1.1 seems to be used in years between 0 and ~1300
-        if n < zero_date:
+        if n < zero_date or n > 60000000:  # only parses dates between 1.1.1 and ~ 1850
             if n == 43791240:
                 v = '-1.1.1'
             else:
                 v = n
         else:
-            year, n = divmod(n - zero_date, 24 * 365)
+            n = (n - zero_date) // 24
+            year, n = divmod(n, 365)
             month = day = 1
             for m in range(1, 12):
                 _, month_length = calendar.monthrange(1995, m)
@@ -210,8 +207,8 @@ class Parser:
                     n -= month_length
                     month += 1
                 else:
-                    day += n
                     break
+            day += n
             v = f"{year}.{month}.{day}"
         self.save_data(v)
 
@@ -244,7 +241,6 @@ class Parser:
             print(k)
             self.keys[self.curr_code] = k
             self.save_data(k)
-        # todo save boolean here whether to keep the key or drop it (whitelist)
 
     def save_data(self, v):
         self.container.append(v)
@@ -255,21 +251,19 @@ class Parser:
     @classmethod
     def from_zip(cls, filename):
         chunks = {
-            "start": [None, "religions"],
-            "province": ["provinces", "countries"],
+            # "start": [None, "religions"],
+            # "province": ["provinces", "countries"],
             "country": ["countries", "active_advisors"],
-            "stats": ["income_statistics", None]
+            # "stats": ["income_statistics", None]
         }
         with ZipFile(filename) as zf:
-            # with zf.open('meta') as f:
-            #     meta = cls(stream=f)
-            #     meta.parse(read_header=True)
-            # print(meta.container)
+            with zf.open('meta') as f:
+                meta = cls(stream=f)
+                meta.parse(read_header=True)
             with zf.open('gamestate') as f:
                 gamestate = cls(stream=f)
                 gamestate.search(chunks)
                 # gamestate.parse(read_header=True)
-        # todo join info
         return gamestate
 
 
@@ -285,7 +279,6 @@ class ClausewitzObjectContainer(dict):
         self.parent = parent
         self.i = 0
         self.duplicate_keys = set()
-        self.drop_keys = set()
 
     def append(self, item):
         self[self.i] = item
@@ -316,19 +309,19 @@ class ClausewitzObjectContainer(dict):
         try:
             name = self[self.i - 2]
             value = self[self.i - 1]
+            self.i -= 2
+            if drop:
+                return
             if name in self and isinstance(name, str):
                 self.duplicate_keys.add(name)
                 while name in self:
                     name += ' '
             self[name] = value
-            self.i -= 2
-            if drop:
-                self.drop_keys.add(name)
         except KeyError:
             self.parent.name_last(drop=drop)
 
-    def to_json(self):
-        pass  # todo convert object to list if needed, use json.dumps
+    def get_last(self):
+        return self[self.i - 1]
 
 
 if __name__ == '__main__':
