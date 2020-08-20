@@ -16,7 +16,7 @@ class Analyzer:
         self.player = gameinfo["meta"]["player"]
         self.current_date = get_date(gameinfo["meta"]["date"])
         self.countries = gameinfo["gamestate"]["countries"]
-        self.provinces = [Province(id=i, **p) for i, p in gameinfo["gamestate"]["provinces"].items()]
+        self.provinces = [Province(id=int(i[1:]), **p) for i, p in gameinfo["gamestate"]["provinces"].items()]
 
     def get_conquest_history(self, country=None):
         country = self.player if country is None else country
