@@ -3,15 +3,14 @@ import csv
 import io
 import json
 import os
+import re
+import struct
 import uuid
-from time import time
+from enum import Enum
+from multiprocessing import Process
 from zipfile import ZipFile
 
 import numpy as np
-import re
-import struct
-from enum import Enum
-from multiprocessing import Process
 
 from src import ASSETS_DIR
 from util import timing
@@ -256,10 +255,10 @@ class Parser:
     @classmethod
     def from_zip(cls, filename):
         chunks = {
-            # "start": [None, "religions"],
-            # "province": ["provinces", "countries"],
+            "start": [None, "religions"],
+            "province": ["provinces", "countries"],
             "country": ["countries", "active_advisors"],
-            # "stats": ["income_statistics", None]
+            "stats": ["income_statistics", None]
         }
         with ZipFile(filename) as zf:
             with zf.open('meta') as f:
@@ -267,7 +266,6 @@ class Parser:
                 meta.parse(read_header=True)
             with zf.open('gamestate') as f:
                 gamestate = cls(stream=f)
-                # gamestate.search(chunks)
                 gamestate.search(chunks, parse_player_only=True)
         return {"meta": meta.container, "gamestate": gamestate.container}
 
@@ -284,30 +282,34 @@ class ClausewitzObjectContainer(dict):
         self.parent = parent
         self.i = 0
         self.duplicate_keys = set()
+        self.contains_kw = False
 
     def append(self, item):
         self[self.i] = item
         self.i += 1
 
     def close(self):
-        if any(isinstance(k, str) for k in self.keys()):
+        if self.contains_kw:
             del self[0]
             del self[1]
-        for key in self.duplicate_keys:
-            group_key = key
-            while group_key in self:  # estate -> estates and keeps adding 's' to avoid overwriting
-                group_key += 's'
-            self[group_key] = ClausewitzObjectContainer(parent=self)
-            current = key
-            while current in self:
-                item = self[current]
-                try:
-                    item.parent = self[group_key]
-                except AttributeError:
-                    pass
-                self[group_key].append(item)
-                del self[current]
-                current += ' '
+        for k, v in list(self.items()):
+            if v == {}:
+                del self[k]
+                continue
+            try:
+                stripped_key = k.rstrip()
+                if stripped_key in self.duplicate_keys:
+                    group_key = stripped_key + 's'
+                    group = self.setdefault(group_key, ClausewitzObjectContainer(parent=self))
+                    group.append(v)
+                    del self[k]
+            except AttributeError:  # key is an integer, rstrip() returned exception
+                pass
+        for k in self.duplicate_keys:
+            group_key = k + 's'
+            if group_key in self and len(self[group_key]) == 1:
+                self[k] = self[group_key][0]
+                del self[group_key]
         self.duplicate_keys.clear()
 
     def name_last(self, drop=False):
@@ -315,6 +317,7 @@ class ClausewitzObjectContainer(dict):
             name = self[self.i - 2]
             value = self[self.i - 1]
             self.i -= 2
+            self.contains_kw = True
             if drop:
                 return
             if name in self and isinstance(name, str):

@@ -1,7 +1,8 @@
 key,description
 id,
+name,
 date,
-countries,
+countries,container
 human,
 was_human,
 institutions,"list of institutions: 0 not embraced, 1 embraced"
@@ -12,7 +13,6 @@ monarch,
 monarch_heir,
 heir,
 queen,
-name,used for monarch names
 DIP,used for monarch stats
 ADM,
 MIL,
@@ -92,3 +92,11 @@ completed_missions,
 country_missions,
 mission_slot,
 government_reform_progress,
+provinces,container for provinces
+owner,
+base_tax,
+base_production,
+base_manpower,
+trade_goods,
+devastation,
+buildings,
