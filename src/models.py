@@ -1,6 +1,6 @@
 import numpy as np
 
-from util import yield_info
+from util import yield_info, get_date
 
 
 class Province:
@@ -11,7 +11,7 @@ class Province:
             for k, v in yield_info(self.history, f=lambda k: k[0] == '1'):
                 inner, tag = v.popitem()
                 if inner == 'owner':
-                    self.last_conquest = k
+                    self.last_conquest = get_date(k)
         except AttributeError:  # no history -> uncolonized?
             pass
 
