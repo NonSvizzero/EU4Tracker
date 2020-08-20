@@ -4,6 +4,7 @@ import io
 import json
 import os
 import uuid
+from time import time
 from zipfile import ZipFile
 
 import numpy as np
@@ -11,6 +12,8 @@ import re
 import struct
 from enum import Enum
 from multiprocessing import Process
+
+from src import ASSETS_DIR
 from util import timing
 
 
@@ -47,16 +50,17 @@ types = {
 class Parser:
     keys = {}
     whitelist = set()
-    assign_t = b'\x01\x00\x03\x00'  # '={' as encoded by Clausewitz
+    assign_token = b'\x01\x00\x03\x00'  # '={' as encoded by Clausewitz
     chunks = 8
 
-    def __init__(self, stream, filename=None, pattern=None):
+    def __init__(self, stream, filename=None, pattern=None, whitelist=True):
         self.stream = stream
         self.filename = filename
         self.pattern = pattern
         self.connection = None
         self.parsers = []
         self.init()
+        self.whitelist = self.whitelist if whitelist else None
         self.curr_code = 0
         self.container = ClausewitzObjectContainer()
         self.last_is_key = False  # boolean used to drop unnecessary keys
@@ -76,24 +80,24 @@ class Parser:
     def init(self):
         if self.keys:
             return
-        with open("src/Assets/keys.txt") as f:
+        with open(f"{ASSETS_DIR}/keys.txt") as f:
             for line in f.readlines():
                 k, v = line.split()
                 k = int(k, 16)
                 v = v.rstrip()
                 self.keys[k] = v
                 self.keys[v] = k
-        with open("src/Assets/keys_whitelist.csv") as f:
+        with open(f"{ASSETS_DIR}/keys_whitelist.csv") as f:
             r = csv.reader(f)
             self.whitelist.update({k for k, d in r})
 
     @timing
-    def search(self, chunks):
+    def search(self, chunks, parse_player_only=None):
         """Searches for offsets of the chunks to parse inside the binary string"""
         b = self.stream.read()
         for name, (s, e) in chunks.items():
-            start = b"" if s is None else (self.keys[s]).to_bytes(2, 'little') + self.assign_t
-            end = b"" if e is None else (self.keys[e]).to_bytes(2, 'little') + self.assign_t
+            start = b"" if s is None else (self.keys[s]).to_bytes(2, 'little') + self.assign_token
+            end = b"" if e is None else (self.keys[e]).to_bytes(2, 'little') + self.assign_token
             string = re.escape(start) + b".*" + re.escape(end)
             p = re.compile(string, flags=re.DOTALL)
             r = re.search(p, b)
@@ -108,7 +112,8 @@ class Parser:
                 # reason, a dummy tag is added at the end of the string for the last match to succeed. The end of a
                 # country section is either '}}' or 'government_reform_progress=<int>bbbb}'
                 tag = b".{4}[A-Z0-9\-]{3}\\\x01\\000\\\x03\\000"  # <str_type><str_len>XXX={
-                pattern = tag + b".*?(?:(?:\\\x04\\000){2,}|\\ 8\\\x01\\000.{6}\\\x04\\000)(?=" + tag + b")"
+                is_human = b'\\\xae\\\x2c\\\x01\\000' if parse_player_only else b''
+                pattern = tag + is_human + b".*?(?:(?:\\\x04\\000){2,}|\\ 8\\\x01\\000.{6}\\\x04\\000)(?=" + tag + b")"
                 stream = io.BytesIO(match[:-8] + b"xxxxFOO\x01\x00\x03\x00\x04\x00")
             elif name == 'province':
                 # same concept as above, last keys now are either "center_of_trade" or "last_looted"
@@ -149,7 +154,7 @@ class Parser:
         content = self.stream.read()[:-2]  # leaves out closing bracket
         matches = re.findall(self.pattern, content, flags=re.DOTALL)
         ls = np.array(matches, dtype=np.object_)
-        for group in np.array_split(ls, self.chunks):
+        for group in np.array_split(ls, min(self.chunks, len(ls))):
             chunk = b''.join(group)
             self.parsers.append(Parser(stream=io.BytesIO(chunk), filename=str(uuid.uuid4())))
         processes = []
@@ -175,7 +180,7 @@ class Parser:
         self.last_is_key = t is Types.KEY
 
     def assign(self):
-        drop = self.last_is_key and self.container.get_last() not in self.whitelist
+        drop = self.whitelist and self.last_is_key and self.container.get_last() not in self.whitelist
         self.read_code()
         self.container.name_last(drop=drop)
 
@@ -258,13 +263,13 @@ class Parser:
         }
         with ZipFile(filename) as zf:
             with zf.open('meta') as f:
-                meta = cls(stream=f)
+                meta = cls(stream=f, whitelist=False)
                 meta.parse(read_header=True)
             with zf.open('gamestate') as f:
                 gamestate = cls(stream=f)
-                gamestate.search(chunks)
-                # gamestate.parse(read_header=True)
-        return gamestate
+                # gamestate.search(chunks)
+                gamestate.search(chunks, parse_player_only=True)
+        return {"meta": meta.container, "gamestate": gamestate.container}
 
 
 class ClausewitzObjectContainer(dict):
@@ -325,5 +330,7 @@ class ClausewitzObjectContainer(dict):
 
 
 if __name__ == '__main__':
-    p = Parser.from_zip("src/Assets/emperor.eu4")
-    # todo write unit tests
+    filename = "emperor"
+    d = Parser.from_zip(f"{ASSETS_DIR}/{filename}.eu4")
+    with open(f"{ASSETS_DIR}/{filename}.json", 'w') as f:
+        json.dump(d, f)
