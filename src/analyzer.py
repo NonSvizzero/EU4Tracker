@@ -1,7 +1,5 @@
-import csv
 import datetime
 import json
-from collections import defaultdict
 
 import numpy as np
 from PIL import Image
@@ -21,32 +19,46 @@ class Analyzer:
         self.current_date = get_date(gameinfo["meta"]["date"])
         self.countries = gameinfo["gamestate"]["countries"]
         self.provinces = [Province(id=int(i[1:]), **p) for i, p in gameinfo["gamestate"]["provinces"].items()]
+        with open(f"{ASSETS_DIR}/province_coordinates.json") as f:
+            self.province_coordinates = json.load(f)
+        self.map_img = Image.open(f"{ASSETS_DIR}/provinces_bordered.png")
+        self.map_img_pixels = self.map_img.getdata()
 
     @timing
-    def draw_conquest_heat_map(self, country=None):
+    def draw_conquest_heat_map(self, country=None, crop_offset=50):
         country = self.player if country is None else country
         conquests = self.get_conquest_history(country=country)
-        dates = {p.last_conquest for p in conquests}
+        max_month_diff = max(calculate_months_diff(p.last_conquest, self.start_date) for p in conquests)
         country_color = tuple(map(lambda x: x / 255, self.countries[country]['colors']['map_color'].values()))
-        a = Color(rgb=country_color, luminance=0.2)
-        b = Color(rgb=a.rgb, luminance=0.8)
-        gradient = a.range_to(b, len(dates))
+        a = Color(rgb=country_color, luminance=0.1, saturation=0.9)  # fixme find proper hsl values here
+        b = Color(rgb=a.rgb, luminance=0.9, saturation=0.1)
+        gradient = a.range_to(b, max_month_diff + 1)
         gradient = [tuple(map(lambda x: round(x * 255), c.rgb)) for c in gradient]
-        dates_to_color = {date: c for date, c in zip(sorted(dates), gradient)}
-        id_to_color = defaultdict(lambda: (128, 128, 128), {p.id: dates_to_color[p.last_conquest] for p in conquests})
-        color_conversions = {}
-        with open(f"{ASSETS_DIR}/definition.csv", encoding='windows-1252') as f:
-            reader = csv.DictReader(f, delimiter=';')
-            for line in reader:
-                rgb = tuple(int(line[x]) for x in ('red', 'green', 'blue'))
-                province_id = int(line['province'])
-                color_conversions[rgb] = id_to_color[province_id]
-                # todo create map with borders and unique colors for sea tiles
-        im = Image.open(f"{ASSETS_DIR}/provinces.png")
-        ls = [color_conversions[px_value] for px_value in im.getdata()]
-        # todo autocrop image
-        out = Image.new(im.mode, im.size)
+        dates_to_color = {date: c for date, c in zip(range(max_month_diff + 1), gradient)}
+        id_to_color = {str(p.id): dates_to_color[calculate_months_diff(p.last_conquest, self.start_date)]
+                       for p in conquests}
+        width, height = self.map_img.size
+        ls = list(self.map_img_pixels)
+        e, n, w, s = 0, height, width, 0
+        for province_id, color in id_to_color.items():
+            for x, bands in self.province_coordinates[province_id].items():
+                x = int(x)
+                for y1, y2 in bands:
+                    band_length = y2 - y1
+                    band_start = x * width + y1
+                    for i in range(band_start, band_start + band_length):
+                        ls[i] = color
+                e = max(e, min(y2 + crop_offset, width))
+                n = min(n, max(x - crop_offset, 0))
+                w = min(w, max(y2 - crop_offset, 0))
+                s = max(s, min(x + crop_offset, height))
+        out = Image.new(self.map_img.mode, self.map_img.size)
         out.putdata(ls)
+        if crop_offset >= 0:
+            out = out.crop((w, n, e, s))
+        # todo resize options
+        # todo draw legend
+        # todo provide timeframe options
         out.save(f"{ASSETS_DIR}/heatmap.png")
 
     def get_conquest_history(self, country=None):
