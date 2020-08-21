@@ -155,7 +155,7 @@ class Parser:
         ls = np.array(matches, dtype=np.object_)
         for group in np.array_split(ls, min(self.chunks, len(ls))):
             chunk = b''.join(group)
-            self.parsers.append(Parser(stream=io.BytesIO(chunk), filename=str(uuid.uuid4())))
+            self.parsers.append(Parser(stream=io.BytesIO(chunk), filename=str(uuid.uuid4())))  # fixme use tempfiles
         processes = []
         for parser in self.parsers:
             processes.append(Process(target=parser.parse))

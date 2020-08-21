@@ -1,6 +1,7 @@
 import csv
 import datetime
 import json
+from collections import defaultdict
 
 import numpy as np
 from PIL import Image
@@ -23,33 +24,29 @@ class Analyzer:
 
     @timing
     def draw_conquest_heat_map(self, country=None):
+        country = self.player if country is None else country
         conquests = self.get_conquest_history(country=country)
-        starting = [p for p in conquests if calculate_months_diff(self.start_date, p.last_conquest) == 0]
-        s = len(starting)
-        a, b = Color('green'), Color('red')  # todo find good colors for the heatmap
-        gradient = [a] * s + list(a.range_to(b, len(conquests) - s))
+        dates = {p.last_conquest for p in conquests}
+        country_color = tuple(map(lambda x: x / 255, self.countries[country]['colors']['map_color'].values()))
+        a = Color(rgb=country_color, luminance=0.2)
+        b = Color(rgb=a.rgb, luminance=0.8)
+        gradient = a.range_to(b, len(dates))
         gradient = [tuple(map(lambda x: round(x * 255), c.rgb)) for c in gradient]
-        id_to_gradient = {p.id: c for p, c in zip(conquests, gradient)}
-        color_to_id = {}
+        dates_to_color = {date: c for date, c in zip(sorted(dates), gradient)}
+        id_to_color = defaultdict(lambda: (128, 128, 128), {p.id: dates_to_color[p.last_conquest] for p in conquests})
+        color_conversions = {}
         with open(f"{ASSETS_DIR}/definition.csv", encoding='windows-1252') as f:
             reader = csv.DictReader(f, delimiter=';')
             for line in reader:
-                color_to_id[tuple(int(line[x]) for x in ('red', 'green', 'blue'))] = int(line['province'])
-        im = Image.open(f"{ASSETS_DIR}/provinces.bmp")
-        w, h = im.size
-        maxw, maxh = 1920, 1080  # fixme find a good aaspect ratio that keeps performance high
-        ratio = min(maxw / w, maxh / h)
-        new_size = tuple(map(lambda x: round(x * ratio), im.size))
-        im.thumbnail(new_size, resample=Image.NEAREST)
-        out = im.copy()
-        w, h = im.size
-        for x in range(w):
-            for y in range(h):
-                px = im.getpixel((x, y))
-                province_id = color_to_id.get(px, -1)
-                out_color = id_to_gradient.get(province_id, (128, 128, 128))
-                out.putpixel((x, y), out_color)
-                # todo put another color for water
+                rgb = tuple(int(line[x]) for x in ('red', 'green', 'blue'))
+                province_id = int(line['province'])
+                color_conversions[rgb] = id_to_color[province_id]
+                # todo create map with borders and unique colors for sea tiles
+        im = Image.open(f"{ASSETS_DIR}/provinces.png")
+        ls = [color_conversions[px_value] for px_value in im.getdata()]
+        # todo autocrop image
+        out = Image.new(im.mode, im.size)
+        out.putdata(ls)
         out.save(f"{ASSETS_DIR}/heatmap.png")
 
     def get_conquest_history(self, country=None):
