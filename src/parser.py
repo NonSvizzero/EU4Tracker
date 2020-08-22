@@ -333,7 +333,7 @@ class ClausewitzObjectContainer(dict):
 
 
 if __name__ == '__main__':
-    filename = "emperor"
+    filename = "dharma"
     d = Parser.from_zip(f"{ASSETS_DIR}/{filename}.eu4")
     with open(f"{ASSETS_DIR}/{filename}.json", 'w') as f:
         json.dump(d, f)
