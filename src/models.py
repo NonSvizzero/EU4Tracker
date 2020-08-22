@@ -1,3 +1,5 @@
+from datetime import datetime
+
 import numpy as np
 
 from util import yield_info, get_date
@@ -6,7 +8,7 @@ from util import yield_info, get_date
 class Province:
     def __init__(self, **kwargs):
         self.__dict__.update(kwargs)
-        self.last_conquest = None
+        self.last_conquest = datetime(year=1444, month=11, day=11)
         try:
             for k, v in yield_info(self.history, f=lambda k: k[0] == '1'):
                 inner, tag = v.popitem()

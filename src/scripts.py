@@ -14,7 +14,7 @@ def process_map():
     sea_colors = set()
     sea_ids = set()  # todo load here ids of sea tiles stored in default.map
     rgb_to_id = {}
-    id_to_pixels = defaultdict(lambda: defaultdict(list))  # {id: {x: [[y1, y2], ...[]]}} list of bands for each row
+    id_to_pixels = defaultdict(lambda: defaultdict(list))  # {id: {y: [[x1, x2], ...[]]}} list of bands for each row
     with open(f"{ASSETS_DIR}/definition.csv", encoding='windows-1252') as f:
         reader = csv.DictReader(f, delimiter=';')
         for line in reader:
@@ -28,39 +28,27 @@ def process_map():
     w, h = im.size
     pixels = list(im.getdata())
     new_pixels = pixels.copy()
-    for x in range(h):
-        previous = pixels[x * w]
-        for y in range(w):
-            i = x * w + y
+    for y in range(h):
+        previous = pixels[y * w]
+        start = 0
+        for x in range(w):
+            i = y * w + x
             pixel = pixels[i]
-            if i - w > 0 and pixel != pixels[i - w]:
-                new_pixels[i - w] = black
-                new_pixels[i] = black
-            elif previous == pixel:
-                new_pixels[i] = pixel
-            elif pixel in sea_colors:
+            if pixel in sea_colors:
                 new_pixels[i] = new_sea_color
-            else:
+            elif previous != pixel or (i - w > 0 and pixel != pixels[i - w]):
                 new_pixels[i] = black
-            previous = pixel
-    out = Image.new(im.mode, im.size)
-    out.putdata([p if (p == black or p == new_sea_color) else gray for p in new_pixels])
-    out.save(f"{ASSETS_DIR}/provinces_bordered.png")
-    # store coordinates for each tile
-    for x in range(h):
-        previous = black
-        for y in range(w):
-            i = x * w + y
-            pixel = new_pixels[i]
-            if pixel == new_sea_color or previous == new_sea_color:
-                continue
-            if previous == black and pixel != black:
-                province_id = rgb_to_id[pixel]
-                id_to_pixels[province_id][x].append([y, w])
-            elif pixel == black and previous != black:
                 province_id = rgb_to_id[previous]
-                id_to_pixels[province_id][x][-1][1] = y
+                id_to_pixels[province_id][y].append([start, x])
+                start = x + 1
+            else:
+                new_pixels[i] = gray
             previous = pixel
+        province_id = rgb_to_id[previous]
+        id_to_pixels[province_id][y].append([start, x])
+    out = Image.new(im.mode, im.size)
+    out.putdata(new_pixels)
+    out.save(f"{ASSETS_DIR}/provinces_bordered.png")
     with open(f"{ASSETS_DIR}/province_coordinates.json", 'w') as f:
         json.dump(id_to_pixels, f)
 
