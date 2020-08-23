@@ -48,15 +48,15 @@ types = {
 
 class Parser:
     keys = {}
+    important_keys = {11854: "countries", 10291: "provinces"}
     whitelist = set()
-    assign_token = b'\x01\x00\x03\x00'  # '={' as encoded by Clausewitz
     chunks = 8
 
-    def __init__(self, stream, filename=None, pattern=None, whitelist=True):
+    def __init__(self, stream, filename=None, pattern=None, whitelist=True, human_only_countries=False):
         self.stream = stream
         self.filename = filename
         self.pattern = pattern
-        self.connection = None
+        self.human_only_countries = human_only_countries
         self.parsers = []
         self.init()
         self.whitelist = self.whitelist if whitelist else None
@@ -83,59 +83,21 @@ class Parser:
             for line in f.readlines():
                 k, v = line.split()
                 k = int(k, 16)
-                v = v.rstrip()
-                self.keys[k] = v
-                self.keys[v] = k
+                if k not in self.important_keys:
+                    v = v.rstrip()
+                    self.keys[k] = v
+                    self.keys[v] = k
         with open(f"{ASSETS_DIR}/keys_whitelist.csv") as f:
             r = csv.reader(f)
             self.whitelist.update({k for k, d in r})
 
     @timing
-    def search(self, chunks, parse_player_only=None):
-        """Searches for offsets of the chunks to parse inside the binary string"""
-        b = self.stream.read()
-        for name, (s, e) in chunks.items():
-            start = b"" if s is None else (self.keys[s]).to_bytes(2, 'little') + self.assign_token
-            end = b"" if e is None else (self.keys[e]).to_bytes(2, 'little') + self.assign_token
-            string = re.escape(start) + b".*" + re.escape(end)
-            p = re.compile(string, flags=re.DOTALL)
-            r = re.search(p, b)
-            print(f"Parsing {name}")
-            s, e = r.span()
-            b = b[:s] + b[e - 6:]  # removes matched section to avoid overlapping in subsequent matches
-            match = r.group()
-            stream = io.BytesIO(match[:-6])  # excludes 'next_token={' from the match
-            # regex pattern used for multiprocessing
-            if name == 'country':
-                # regex explanation: it uses positive lookahead to match until next country tag is found. For this
-                # reason, a dummy tag is added at the end of the string for the last match to succeed. The end of a
-                # country section is either '}}' or 'government_reform_progress=<int>bbbb}'
-                tag = b".{4}[A-Z0-9\-]{3}\\\x01\\000\\\x03\\000"  # <str_type><str_len>XXX={
-                is_human = b'\\\xae\\\x2c\\\x01\\000' if parse_player_only else b''
-                pattern = tag + is_human + b".*?(?:(?:\\\x04\\000){2,}|\\ 8\\\x01\\000.{6}\\\x04\\000)(?=" + tag + b")"
-                stream = io.BytesIO(match[:-8] + b"xxxxFOO\x01\x00\x03\x00\x04\x00")
-            elif name == 'province':
-                # same concept as above, last keys now are either "center_of_trade" or "last_looted"
-                # fixme do centers of reform/revolution break this?
-                tag = b'\x0c\x00.{4}\x01\x00\x03\x00'  # <int_type><4_int_bytes>={
-                pattern = tag + b".*?(?:(?:\\\x04\\000){2,}|(?:u1|\\\x9a8)\\\x01\\000.{6}\\\x04\\000)(?=" + tag + b")"
-                stream = io.BytesIO(match[:-8] + b'.' * 10 + b"ttIIII\x01\x00\x03\x00\x04\x00")
-            else:
-                pattern = None
-            parser = Parser(stream=stream, pattern=pattern)
-            parser.parse(read_header=name == 'start')
-            self.parsers.append(parser)
-        for parser in self.parsers:
-            self.container.update(parser.container)
-        print(f"Search concluded, save file successfully parsed!")
-
-    @timing
-    def parse(self, read_header=False):
-        if read_header:
-            assert self.stream.read(6) == b'EU4bin'
+    def parse(self, read_header=True):
         if self.pattern:
             self.parse_parallel()
         else:
+            if read_header:
+                assert self.stream.read(6) == b'EU4bin'
             try:
                 while True:
                     self.read_code()
@@ -148,9 +110,7 @@ class Parser:
     def parse_parallel(self):
         """Uses multiprocessing to parse a big top-level object faster by splitting the content in chunks and spawning
         workers"""
-        self.read_code()  # read token
-        self.read_code()  # read '={'
-        content = self.stream.read()[:-2]  # leaves out closing bracket
+        content = self.stream.read()
         matches = re.findall(self.pattern, content, flags=re.DOTALL)
         ls = np.array(matches, dtype=np.object_)
         for group in np.array_split(ls, min(self.chunks, len(ls))):
@@ -158,19 +118,25 @@ class Parser:
             self.parsers.append(Parser(stream=io.BytesIO(chunk), filename=str(uuid.uuid4())))  # fixme use tempfiles
         processes = []
         for parser in self.parsers:
-            processes.append(Process(target=parser.parse))
+            processes.append(Process(target=parser.parse, args=(False,)))
             processes[-1].start()
         for process in processes:
             process.join()
-        self.close_object()
         for parser in self.parsers:
             with open(parser.filename) as f:
                 d = json.load(f)
-                self.container[1].update(d)
+                self.container.update(d)
             os.remove(parser.filename)
-        self.container[self.container[0]] = self.container[1]
-        del self.container[0]
-        del self.container[1]
+
+    def parse_player_country(self):
+        b = self.stream.read()
+        tag = b".{4}[A-Z0-9\-]{3}\\\x01\\000\\\x03\\000"  # <str_type><str_len>XXX={
+        is_human = b'\\\xae\\\x2c\\\x01\\000'
+        pattern = tag + is_human + b".*?(?:(?:\\\x04\\000){2,}|\\ 8\\\x01\\000.{6}\\\x04\\000)(?=" + tag + b")"
+        country = re.search(pattern, b, flags=re.DOTALL).group(0)
+        parser = Parser(stream=io.BytesIO(country))
+        parser.parse(read_header=False)
+        self.container["countries"] = parser.container
 
     def read_code(self):
         self.curr_code = self.unpack_data(2, '<H')
@@ -241,10 +207,43 @@ class Parser:
         try:
             self.save_data(self.keys[self.curr_code])
         except KeyError:
-            k = f"unknown_key_{hex(self.curr_code)}"
-            print(k)
-            self.keys[self.curr_code] = k
-            self.save_data(k)
+            try:
+                k = self.important_keys[self.curr_code]
+                self.save_data(k)
+                if not self.container.parent:  # top level object, split the content
+                    self.read_code()  # read ={
+                    b = self.stream.read()
+                    # regex pattern used for multiprocessing
+                    if k == 'countries':
+                        # regex explanation: it uses positive lookahead to match until next country tag is found. For
+                        #  this reason, a dummy tag is added at the end of the string for the last match to succeed.
+                        # The end of a country section is either '}}' or 'government_reform_progress=<int>bbbb}'
+                        tag = b".{4}[A-Z0-9\-]{3}\\\x01\\000\\\x03\\000"  # <str_type><str_len>XXX={
+                        is_human = b'\\\xae\\\x2c\\\x01\\000' if self.human_only_countries else b''
+                        pattern = tag + is_human + b".*?(?:(?:\\\x04\\000){2,}|\\ 8\\\x01\\000.{6}\\\x04\\000)(?=" + tag + b")"
+                        end = b'\x04\x00\xda\x28\x01\x00\x03\x00'  # '}active_advisors={' as encoded by Clausewitz
+                        dummy_string = b"ttllFOO\x01\x00\x03\x00\x04\x00"
+                    elif k == 'provinces':
+                        # same concept as above, last keys now are either "center_of_trade" or "last_looted"
+                        # fixme do centers of reform/revolution break this?
+                        tag = b'\x0c\x00.{4}\x01\x00\x03\x00'  # <int_type><4_int_bytes>={
+                        pattern = tag + b".*?(?:(?:\\\x04\\000){2,}|(?:u1|\\\x9a8)\\\x01\\000.{6}\\\x04\\000)(?=" + tag + b")"
+                        end = b'\x04\x00\x4e\x2e\x01\x00\x03\x00'  # '}countries={' as encoded by Clausewitz
+                        dummy_string = b"ttIIII\x01\x00\x03\x00\x04\x00"
+                    else:
+                        raise ValueError
+                    match = re.search(re.escape(end), b, flags=re.DOTALL)
+                    split = match.start()
+                    content, remainder = (io.BytesIO(x) for x in (b[:split] + dummy_string, b[split:]))
+                    parser = Parser(stream=content, pattern=pattern)
+                    parser.parse()
+                    self.container.update(parser.container)
+                    self.stream = remainder
+            except IndexError:
+                k = f"unknown_key_{hex(self.curr_code)}"
+                print(k)
+                self.keys[self.curr_code] = k
+                self.save_data(k)
 
     def save_data(self, v):
         self.container.append(v)
@@ -254,19 +253,14 @@ class Parser:
 
     @classmethod
     def from_zip(cls, filename):
-        chunks = {
-            "start": [None, "religions"],
-            "province": ["provinces", "countries"],
-            "country": ["countries", "active_advisors"],
-            "stats": ["income_statistics", None]
-        }
         with ZipFile(filename) as zf:
             with zf.open('meta') as f:
                 meta = cls(stream=f, whitelist=False)
-                meta.parse(read_header=True)
+                meta.parse()
             with zf.open('gamestate') as f:
-                gamestate = cls(stream=f)
-                gamestate.search(chunks, parse_player_only=True)
+                gamestate = cls(stream=f, human_only_countries=True)
+                gamestate.parse()
+                # gamestate.parse_player_country()
         return {"meta": meta.container, "gamestate": gamestate.container}
 
 
@@ -333,7 +327,7 @@ class ClausewitzObjectContainer(dict):
 
 
 if __name__ == '__main__':
-    filename = "dharma"
+    filename = "emperor"
     d = Parser.from_zip(f"{ASSETS_DIR}/{filename}.eu4")
     with open(f"{ASSETS_DIR}/{filename}.json", 'w') as f:
         json.dump(d, f)
