@@ -225,10 +225,11 @@ class Parser:
                         end = b'\x04\x00\xda\x28\x01\x00\x03\x00'  # '}active_advisors={' as encoded by Clausewitz
                         dummy_string = b"ttllFOO\x01\x00\x03\x00"
                     elif k == 'provinces':
-                        # same concept as above, last keys now are either "center_of_trade" or "last_looted"
-                        # fixme do centers of reform/revolution break this?
+                        # same concept as above, last keys now are either "center_of_trade", "last_looted" or
+                        # "revolution"
+                        # fixme generate programmatically these regexes based on possible last keywords
                         tag = b'\x0c\x00.{4}\x01\x00\x03\x00'  # <int_type><4_int_bytes>={
-                        pattern = tag + b".*?(?:(?:\\\x04\\000){2,}|(?:u1|\\\x9a8)\\\x01\\000.{6}\\\x04\\000)(?=" + tag + b")"
+                        pattern = tag + b".*?(?:(?:\\\x04\\000){2,}|(?:u1|\\\x9a8|\\\xbc9)\\\x01\\000.*?\\\x04\\000)(?=" + tag + b")"
                         end = b'\x04\x00\x4e\x2e\x01\x00\x03\x00'  # '}countries={' as encoded by Clausewitz
                         dummy_string = b"\x0c\x00IIII\x01\x00\x03\x00"
                     else:
@@ -260,7 +261,7 @@ class Parser:
                 meta = cls(stream=f, whitelist=False)
                 meta.parse()
             with zf.open('gamestate') as f:
-                gamestate = cls(stream=f)
+                gamestate = cls(stream=f, whitelist=True)
                 gamestate.parse()
                 # gamestate.parse_player_country()
         return {"meta": meta.container, "gamestate": gamestate.container}
@@ -329,7 +330,7 @@ class ClausewitzObjectContainer(dict):
 
 
 if __name__ == '__main__':
-    filename = "emperor"
+    filename = "Bharat"
     d = Parser.from_zip(f"{ASSETS_DIR}/{filename}.eu4")
     with open(f"{ASSETS_DIR}/{filename}.json", 'w') as f:
         json.dump(d, f)

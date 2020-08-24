@@ -9,6 +9,19 @@ from util import yield_info, get_date, calculate_months_diff, timing
 
 START_DATE = datetime(year=1444, month=11, day=11)
 
+MANA_EXPENSES = ['buy_idea', 'advance_tech', 'boost_stab', 'buy_general', 'buy_admiral', 'buy_conq', 'buy_explorer',
+                 'develop_prov', 'force_march', 'assault', 'seize_colony', 'burn_colony', 'attack_natives',
+                 'scorch_earth', 'demand_non_wargoal_prov', 'reduce_inflation', 'move_capital', 'make_province_core',
+                 'replace_rival', 'change_gov', 'change_culture', 'harsh_treatment', 'reduce_we', 'boost_faction',
+                 'raise_war_taxes', 'buy_native_advancement', 'increase_tariffs', 'promote_merc', 'decrease_tariffs',
+                 'move_trade_port', 'create_trade_post', 'siege_sorties', 'buy_religious_reform', 'set_primary_culture',
+                 'add_accepted_culture', 'remove_accepted_culture', 'strengthen_government', 'boost_millitarization',
+                 'unknown', 'artillery_barrage', 'establish_siberian_frontier', 'government_interaction', 'unknown',
+                 'naval_barrage', 'unknown', 'force_march', 'create_leader', 'enforce_culture', 'effect',
+                 'minority_expulsion', 'unknown']
+
+MANA = ('ADM', 'DIP', 'MIL')
+
 
 class DummyCountryException(Exception):
     pass
@@ -56,12 +69,18 @@ class Country:
             self.colors = [self.REV_COLORS[i] for i in kwargs["colors"]["revolutionary_colors"].values()]
         except KeyError:
             raise DummyCountryException
-        self.history = {k: v for k, v in self.history.items() if k[0].isnumeric()}
         self.rulers = []
         self.avg_ruler_stats = None
         self.avg_ruler_life = None
 
+    def __str__(self):
+        return self.tag
+
+    def __repr__(self):
+        return str(self)
+
     def analyze(self, campaign):
+        self.categorize_mana_expenses()
         self.get_ruler_history(campaign.current_date)
         self.calculate_provinces(campaign.provinces)
 
@@ -69,9 +88,9 @@ class Country:
         for k in ('owned_provinces', 'controlled_provinces', 'core_provinces'):
             setattr(self, k, list(sorted((provinces[i - 1] for i in getattr(self, k).values()),
                                          key=lambda p: p.last_conquest)))
-        # todo find meanings of 'adm_spent_indexed' with the "powerspend" command in-game
         for k in ('capital', 'trade_port'):
             setattr(self, k, provinces[getattr(self, k)])
+        # fixme add subject provinces
 
     def get_ruler_history(self, current_date):
         total_months = calculate_months_diff(current_date, START_DATE)
@@ -90,6 +109,11 @@ class Country:
         # rulers stats
         self.avg_ruler_life = np.average([r.months for r in self.rulers if not r.is_regency_council])
         self.avg_ruler_stats = sum([r.mana_generated for r in self.rulers]) / total_months
+
+    def categorize_mana_expenses(self):
+        for k in (f"{x.lower()}_spent_indexed" for x in MANA):
+            d = getattr(self, k)
+            setattr(self, k, {MANA_EXPENSES[int(kw)]: v for kw, v in d.items()})
 
     def add_ruler(self, ruler, d1, d2):
         months_diff = calculate_months_diff(d1, d2)
@@ -130,10 +154,8 @@ class Province:
 
 
 class Ruler:
-    stats = ('ADM', 'DIP', 'MIL')
-
     def __init__(self, **kwargs):
-        self.value = np.array([kwargs[x] for x in self.stats])
+        self.value = np.array([kwargs[x] for x in MANA])
         self.is_regency_council = kwargs['name'] == "(Regency Council)"
         self.months = None
         self.mana_generated = None

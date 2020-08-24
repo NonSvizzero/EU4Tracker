@@ -25,6 +25,7 @@ class Analyzer:
     @timing
     def draw_conquest_heat_map(self, country=None, crop_margin=50, resize_ratio=1.0, start_date=None, end_date=None):
         # todo add support for multiplayer by drawing multiple countries in a single map
+        # fixme some provinces in the bharat file don't work properly, find why
         country = self.campaign.get_country(country)
         start_date = get_date(start_date) if start_date else START_DATE
         end_date = get_date(end_date) if end_date else self.campaign.current_date  # todo raise exception wrong date
@@ -72,5 +73,5 @@ class Analyzer:
 
 if __name__ == '__main__':
     analyzer = Analyzer()
-    campaign = Campaign.from_file(f"{ASSETS_DIR}/emperor.json", player_only=True)
+    campaign = Campaign.from_file(f"{ASSETS_DIR}/Bharat.json", player_only=True)
     analyzer.analyze(campaign)
