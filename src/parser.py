@@ -83,15 +83,15 @@ class Parser:
             for line in f.readlines():
                 k, v = line.split()
                 k = int(k, 16)
-                if k not in self.important_keys:
-                    v = v.rstrip()
-                    self.keys[k] = v
-                    self.keys[v] = k
+                v = v.rstrip()
+                self.keys[k] = v
+                self.keys[v] = k
+            for k in self.important_keys:
+                del self.keys[k]
         with open(f"{ASSETS_DIR}/keys_whitelist.csv") as f:
             r = csv.reader(f)
             self.whitelist.update({k for k, d in r})
 
-    @timing
     def parse(self, read_header=True):
         if self.pattern:
             self.parse_parallel()
@@ -107,6 +107,7 @@ class Parser:
                     with open(self.filename, 'w') as f:
                         json.dump(self.container, f)
 
+    @timing
     def parse_parallel(self):
         """Uses multiprocessing to parse a big top-level object faster by splitting the content in chunks and spawning
         workers"""
@@ -222,14 +223,14 @@ class Parser:
                         is_human = b'\\\xae\\\x2c\\\x01\\000' if self.human_only_countries else b''
                         pattern = tag + is_human + b".*?(?:(?:\\\x04\\000){2,}|\\ 8\\\x01\\000.{6}\\\x04\\000)(?=" + tag + b")"
                         end = b'\x04\x00\xda\x28\x01\x00\x03\x00'  # '}active_advisors={' as encoded by Clausewitz
-                        dummy_string = b"ttllFOO\x01\x00\x03\x00\x04\x00"
+                        dummy_string = b"ttllFOO\x01\x00\x03\x00"
                     elif k == 'provinces':
                         # same concept as above, last keys now are either "center_of_trade" or "last_looted"
                         # fixme do centers of reform/revolution break this?
                         tag = b'\x0c\x00.{4}\x01\x00\x03\x00'  # <int_type><4_int_bytes>={
                         pattern = tag + b".*?(?:(?:\\\x04\\000){2,}|(?:u1|\\\x9a8)\\\x01\\000.{6}\\\x04\\000)(?=" + tag + b")"
                         end = b'\x04\x00\x4e\x2e\x01\x00\x03\x00'  # '}countries={' as encoded by Clausewitz
-                        dummy_string = b"ttIIII\x01\x00\x03\x00\x04\x00"
+                        dummy_string = b"\x0c\x00IIII\x01\x00\x03\x00"
                     else:
                         raise ValueError
                     match = re.search(re.escape(end), b, flags=re.DOTALL)
@@ -239,7 +240,7 @@ class Parser:
                     parser.parse()
                     self.container.update(parser.container)
                     self.stream = remainder
-            except IndexError:
+            except KeyError:
                 k = f"unknown_key_{hex(self.curr_code)}"
                 print(k)
                 self.keys[self.curr_code] = k
@@ -252,13 +253,14 @@ class Parser:
         return struct.unpack(ft, self.stream.read(size))[0]
 
     @classmethod
+    @timing
     def from_zip(cls, filename):
         with ZipFile(filename) as zf:
             with zf.open('meta') as f:
                 meta = cls(stream=f, whitelist=False)
                 meta.parse()
             with zf.open('gamestate') as f:
-                gamestate = cls(stream=f, human_only_countries=True)
+                gamestate = cls(stream=f)
                 gamestate.parse()
                 # gamestate.parse_player_country()
         return {"meta": meta.container, "gamestate": gamestate.container}

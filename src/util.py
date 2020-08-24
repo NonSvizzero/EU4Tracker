@@ -30,13 +30,13 @@ def timing(f):
     return wrap
 
 
-def yield_info(d, f=lambda x: True, reverse=False):
+def yield_info(pairs, reverse=False):
     """Yields items in the dictionary sorting by keys and expanding items grouped in the same keys."""
-    items = sorted(((standardize_date(k), v) for k, v in d.items() if f(k)), reverse=reverse)
+    items = sorted(((standardize_date(k), v) for k, v in pairs), reverse=reverse)
     for k, v in items:
         if k[-1] == 's' and isinstance(v, dict) and all(key.isnumeric() for key in v):
             for inner in v.values():
-                yield k[:-1], inner
+                yield_info({k[:-1]: inner}, reverse=reverse)
         else:
             yield k, v
 

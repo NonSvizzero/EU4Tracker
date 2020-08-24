@@ -5,27 +5,43 @@ from datetime import datetime
 import numpy as np
 from colour import Color
 
-from util import yield_info, get_date, calculate_months_diff
+from util import yield_info, get_date, calculate_months_diff, timing
 
 START_DATE = datetime(year=1444, month=11, day=11)
 
 
+class DummyCountryException(Exception):
+    pass
+
+
 class Campaign:
-    def __init__(self, gameinfo):
+    def __init__(self, gameinfo, player_only=False):
         self.gameinfo = gameinfo
         self.player = gameinfo["meta"]["player"]
         self.current_date = get_date(gameinfo["meta"]["date"])
+        self.countries = {}
+        for tag, c in gameinfo["gamestate"]["countries"].items():
+            try:
+                self.countries[tag] = Country(tag=tag, **c)
+            except DummyCountryException:
+                pass
         self.provinces = [Province(id=int(i[1:]), **p) for i, p in gameinfo["gamestate"]["provinces"].items()]
-        self.countries = {tag: Country(self, tag=tag, **c) for tag, c in gameinfo["gamestate"]["countries"].items()}
+        if player_only:
+            player_country = self.countries[self.player]
+            player_country.analyze(self)
+        else:
+            for country in self.countries.values():
+                country.analyze(self)
 
     def get_country(self, country=None):
         return self.countries[country if country else self.player]
 
     @classmethod
-    def from_file(cls, filename):
+    @timing
+    def from_file(cls, filename, player_only=False):
         with open(filename) as f:
             d = json.load(f)
-            return cls(gameinfo=d)
+            return cls(gameinfo=d, player_only=player_only)
 
 
 class Country:
@@ -34,29 +50,42 @@ class Country:
                   (195, 83, 0), (66, 40, 20), (245, 193, 0), (0, 59, 9), (0, 124, 52), (0, 194, 111),
                   (0, 175, 194), (53, 0, 131), (110, 194, 243), (26, 50, 134), (211, 0, 27)]
 
-    def __init__(self, campaign, **kwargs):
+    def __init__(self, **kwargs):
         self.__dict__.update(**kwargs)
-        for k in ('owned_provinces', 'controlled_provinces', 'core_provinces'):
-            setattr(self, k, list(sorted((campaign.provinces[i - 1] for i in kwargs[k].values()),
-                                         key=lambda p: p.last_conquest)))
-        # todo find meanings of 'adm_spent_indexed' with the "powerspend" command in-game
-        for k in ('capital', 'trade_port'):
-            setattr(self, k, campaign.provinces[kwargs[k]])
+        try:
+            self.colors = [self.REV_COLORS[i] for i in kwargs["colors"]["revolutionary_colors"].values()]
+        except KeyError:
+            raise DummyCountryException
+        self.history = {k: v for k, v in self.history.items() if k[0].isnumeric()}
         self.rulers = []
         self.avg_ruler_stats = None
         self.avg_ruler_life = None
+
+    def analyze(self, campaign):
         self.get_ruler_history(campaign.current_date)
-        self.colors = [self.REV_COLORS[i] for i in kwargs["colors"]["revolutionary_colors"].values()]
+        self.calculate_provinces(campaign.provinces)
+
+    def calculate_provinces(self, provinces):
+        for k in ('owned_provinces', 'controlled_provinces', 'core_provinces'):
+            setattr(self, k, list(sorted((provinces[i - 1] for i in getattr(self, k).values()),
+                                         key=lambda p: p.last_conquest)))
+        # todo find meanings of 'adm_spent_indexed' with the "powerspend" command in-game
+        for k in ('capital', 'trade_port'):
+            setattr(self, k, provinces[getattr(self, k)])
 
     def get_ruler_history(self, current_date):
         total_months = calculate_months_diff(current_date, START_DATE)
         last_crowning = last_ruler = None
-        for date, history in yield_info(self.history, f=lambda x: x[0] == '1'):
+        for date, history in yield_info(((k, v) for k, v in self.history.items() if k[0].isnumeric())):
             if any(x in history for x in ('monarch', 'monarch_heir')):
                 new_crowing = get_date(date)
                 if new_crowing > START_DATE:
                     self.add_ruler(last_ruler, new_crowing, last_crowning)
-                last_crowning, last_ruler = new_crowing, Ruler(**history.popitem()[1])
+                # fixme sometimes both monarch and monarch_heir are in history, what does this mean?
+                try:
+                    last_crowning, last_ruler = new_crowing, Ruler(**history['monarch'])
+                except KeyError:
+                    last_crowning, last_ruler = new_crowing, Ruler(**history['monarch_heir'])
         self.add_ruler(last_ruler, current_date, last_crowning)
         # rulers stats
         self.avg_ruler_life = np.average([r.months for r in self.rulers if not r.is_regency_council])
@@ -85,8 +114,9 @@ class Province:
         self.__dict__.update(kwargs)
         self.last_conquest = datetime(year=1444, month=11, day=11)
         try:
-            for k, v in yield_info(self.history, f=lambda k: k[0] == '1'):
+            for k, v in yield_info(((k, v) for k, v in self.history.items() if k[0].isnumeric())):
                 inner, tag = v.popitem()
+                # fixme this probably breaks with tag-switching countries, see occupations as well
                 if inner == 'owner':
                     self.last_conquest = get_date(k)
         except AttributeError:  # no history -> uncolonized?
