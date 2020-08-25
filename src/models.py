@@ -36,7 +36,7 @@ class Campaign:
         for tag, c in gameinfo["gamestate"]["countries"].items():
             try:
                 self.countries[tag] = Country(tag=tag, **c)
-            except DummyCountryException:
+            except DummyCountryException:  # fixme some real countries don't have revolutionary colors, find another key
                 pass
         self.provinces = [Province(id=int(i[1:]), **p) for i, p in gameinfo["gamestate"]["provinces"].items()]
         if player_only:
@@ -45,6 +45,9 @@ class Campaign:
         else:
             for country in self.countries.values():
                 country.analyze(self)
+
+    def __str__(self):
+        return str(self.gameinfo["meta"])
 
     def get_country(self, country=None):
         return self.countries[country if country else self.player]
@@ -98,13 +101,15 @@ class Country:
         for date, history in yield_info(((k, v) for k, v in self.history.items() if k[0].isnumeric())):
             if any(x in history for x in ('monarch', 'monarch_heir')):
                 new_crowing = get_date(date)
+                try:
+                    last_ruler = Ruler(**history['monarch'])
+                except KeyError:
+                    last_ruler = Ruler(**history['monarch_heir'])
                 if new_crowing > START_DATE:
                     self.add_ruler(last_ruler, new_crowing, last_crowning)
-                # fixme sometimes both monarch and monarch_heir are in history, what does this mean?
-                try:
-                    last_crowning, last_ruler = new_crowing, Ruler(**history['monarch'])
-                except KeyError:
-                    last_crowning, last_ruler = new_crowing, Ruler(**history['monarch_heir'])
+                    last_crowning = new_crowing
+                else:
+                    last_crowning = START_DATE
         self.add_ruler(last_ruler, current_date, last_crowning)
         # rulers stats
         self.avg_ruler_life = np.average([r.months for r in self.rulers if not r.is_regency_council])
@@ -155,13 +160,17 @@ class Province:
 
 class Ruler:
     def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
         self.value = np.array([kwargs[x] for x in MANA])
         self.is_regency_council = kwargs['name'] == "(Regency Council)"
         self.months = None
         self.mana_generated = None
 
     def __str__(self):
-        return f"value={self.value}, months={self.months}"
+        return f"name={self.name}, value={self.value}, months={self.months}"
+
+    def __repr__(self):
+        return str(self)
 
     def set_lifespan(self, months):
         self.months = months
