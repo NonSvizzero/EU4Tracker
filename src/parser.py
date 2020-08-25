@@ -133,7 +133,7 @@ class Parser:
         b = self.stream.read()
         tag = b".{4}[A-Z0-9\-]{3}\\\x01\\000\\\x03\\000"  # <str_type><str_len>XXX={
         is_human = b'\\\xae\\\x2c\\\x01\\000'
-        pattern = tag + is_human + b".*?(?:(?:\\\x04\\000){2,}|\\ 8\\\x01\\000.{6}\\\x04\\000)(?=" + tag + b")"
+        pattern = tag + is_human + b".*?\\\xe27\\\x01\\000.*?(?=" + tag + b")"
         country = re.search(pattern, b, flags=re.DOTALL).group(0)
         parser = Parser(stream=io.BytesIO(country))
         parser.parse(read_header=False)
@@ -217,19 +217,19 @@ class Parser:
                     # regex pattern used for multiprocessing
                     if k == 'countries':
                         # regex explanation: it uses positive lookahead to match until next country tag is found. For
-                        #  this reason, a dummy tag is added at the end of the string for the last match to succeed.
-                        # The end of a country section is either '}}' or 'government_reform_progress=<int>bbbb}'
+                        # this reason, a dummy tag is added at the end of the string for the last match to succeed.
+                        # Since a country tag can be found inside the active_relations section, we match
+                        # innovativeness (\\\xe27) first which ensures the whole country content to be matched.
                         tag = b".{4}[A-Z0-9\-]{3}\\\x01\\000\\\x03\\000"  # <str_type><str_len>XXX={
                         is_human = b'\\\xae\\\x2c\\\x01\\000' if self.human_only_countries else b''
-                        pattern = tag + is_human + b".*?(?:(?:\\\x04\\000){2,}|\\ 8\\\x01\\000.{6}\\\x04\\000)(?=" + tag + b")"
+                        pattern = tag + is_human + b".*?\\\xe27\\\x01\\000.*?(?=" + tag + b")"
                         end = b'\x04\x00\xda\x28\x01\x00\x03\x00'  # '}active_advisors={' as encoded by Clausewitz
                         dummy_string = b"ttllFOO\x01\x00\x03\x00"
                     elif k == 'provinces':
-                        # same concept as above, last keys now are either "center_of_trade", "last_looted" or
-                        # "revolution"
-                        # fixme generate programmatically these regexes based on possible last keywords
+                        # each province is identified with an int type. We find int indexes only as province identifiers
+                        # so it's safe to use the lazy dot operator to match the whole content
                         tag = b'\x0c\x00.{4}\x01\x00\x03\x00'  # <int_type><4_int_bytes>={
-                        pattern = tag + b".*?(?:(?:\\\x04\\000){2,}|(?:u1|\\\x9a8|\\\xbc9)\\\x01\\000.*?\\\x04\\000)(?=" + tag + b")"
+                        pattern = tag + b".*?(?=" + tag + b")"
                         end = b'\x04\x00\x4e\x2e\x01\x00\x03\x00'  # '}countries={' as encoded by Clausewitz
                         dummy_string = b"\x0c\x00IIII\x01\x00\x03\x00"
                     else:
@@ -243,7 +243,7 @@ class Parser:
                     self.stream = remainder
             except KeyError:
                 k = f"unknown_key_{hex(self.curr_code)}"
-                print(k)
+                print(k, self.container.parent)
                 self.keys[self.curr_code] = k
                 self.save_data(k)
 
