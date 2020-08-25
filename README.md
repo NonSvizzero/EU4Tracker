@@ -6,5 +6,5 @@ TODO
 
 ## Thanks
 
-* Matthewbauer for providing [Eu4-parser](https://github.com/matthewbauer/eu4-parser), used to build the GeoJSON file
+* Matthewbauer for providing [Eu4-parser](https://github.com/matthewbauer/eu4-parser), which helped me set up leaflet
 * Folks at [Skanderbeg](https://skanderbeg.pm/index.php) for giving me inspiration and tips

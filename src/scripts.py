@@ -2,7 +2,10 @@ import csv
 import json
 from collections import defaultdict
 
+import geojson
+import numpy as np
 from PIL import Image
+from rasterio.features import shapes
 
 from src import ASSETS_DIR
 
@@ -90,5 +93,39 @@ def process_map():
         json.dump(id_to_pixels, f)
 
 
+def find_polygons():
+    rgb_to_province = {}
+    with open(f"{ASSETS_DIR}/definition.csv", encoding='windows-1252') as f:
+        reader = csv.DictReader(f, delimiter=';')
+        for line in reader:
+            rgb = tuple(int(line[x]) for x in ('red', 'green', 'blue'))
+            province_id = int(line['province'])
+            rgb_to_province[rgb] = (province_id, line['name'])
+    im = Image.open(f"{ASSETS_DIR}/provinces.png")
+    arr = np.array(im)
+    out = np.vectorize(rgb_to_int32, otypes=[np.int32])(*np.rollaxis(arr, 2, 0))
+    out = out[::-1]
+    features = []
+    for i, (s, v) in enumerate(shapes(out)):
+        rgb = int32_to_rgb(v)
+        province_id, name = rgb_to_province[rgb]
+        feature = {"geometry": s, "id": province_id, "properties": {"color": rgb, "name": name}, "type": "Feature"}
+        features.append(feature)
+
+    feature_collection = geojson.FeatureCollection(sorted(features, key=lambda x: x["id"]))
+    with open(f'{ASSETS_DIR}/provinces.geojson', 'w') as f:
+        geojson.dump(feature_collection, f)
+        print(f"{len(features)} polygons found! GeoJSON dumped.")
+
+
+def rgb_to_int32(r, g, b):
+    return (r << 16) + (g << 8) + b
+
+
+def int32_to_rgb(n):
+    n = int(n)
+    return n >> 16 & 0xFF, n >> 8 & 0xFF, n & 0xFF
+
+
 if __name__ == '__main__':
-    process_map()
+    find_polygons()

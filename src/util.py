@@ -3,6 +3,8 @@ from collections import defaultdict
 from functools import wraps
 from time import time
 
+from flask import render_template
+
 func_times = defaultdict(float)
 
 
@@ -47,3 +49,7 @@ def standardize_date(s):
         return date.isoformat()
     except ValueError:
         return s
+
+
+def render_template_wrapper(page, **kwargs):
+    return render_template(page, **kwargs), "HTTP/1.1 200 OK", {"Content-Type": "text/html"}
