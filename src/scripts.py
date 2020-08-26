@@ -1,18 +1,16 @@
 import csv
-import json
-from collections import defaultdict
 
 import geojson
 import numpy as np
+import shapely
 from PIL import Image
 from rasterio.features import shapes
+from shapely.geometry import shape
 
 from src import ASSETS_DIR
 
 
-def process_map():
-    black = (0, 0, 0)
-    gray = (128, 128, 128)
+def draw_map_without_sea_tiles():
     new_sea_color = (166, 255, 255)
     sea_colors = set()
     sea_ids = {4224, 4225, 4226, 4233, 4234, 4333, 4346, 4347, 4357, 4358, 3004, 3005, 3006, 3007, 3008, 3009, 3010,
@@ -56,7 +54,6 @@ def process_map():
                1728, 1729, 1730, 1731, 1732, 1733, 1734, 1735, 1736, 1737, 1738, 1739, 1740, 1741, 1924, 1926, 1927,
                1928, 1929, 1932, 1975, 1980}  # stored in default.map game file
     rgb_to_id = {}
-    id_to_pixels = defaultdict(lambda: defaultdict(list))  # {id: {y: [[x1, x2], ...[]]}} list of bands for each row
     with open(f"{ASSETS_DIR}/definition.csv", encoding='windows-1252') as f:
         reader = csv.DictReader(f, delimiter=';')
         for line in reader:
@@ -69,28 +66,14 @@ def process_map():
     im = Image.open(f"{ASSETS_DIR}/provinces.png")
     w, h = im.size
     pixels = list(im.getdata())
-    new_pixels = pixels.copy()
     for y in range(h):
-        previous = pixels[y * w]
-        start = 0
         for x in range(w):
             i = y * w + x
-            pixel = pixels[i]
-            if previous != pixel or (i - w > 0 and pixel != pixels[i - w]):
-                new_pixels[i] = black
-                province_id = rgb_to_id[previous]
-                id_to_pixels[province_id][y].append([start, x])
-                start = x + 1
-            else:
-                new_pixels[i] = new_sea_color if pixel in sea_colors else gray
-            previous = pixel
-        province_id = rgb_to_id[previous]
-        id_to_pixels[province_id][y].append([start, x])
+            if pixels[i] in sea_colors:
+                pixels[i] = new_sea_color
     out = Image.new(im.mode, im.size)
-    out.putdata(new_pixels)
-    out.save(f"{ASSETS_DIR}/provinces_bordered.png")
-    with open(f"{ASSETS_DIR}/province_coordinates.json", 'w') as f:
-        json.dump(id_to_pixels, f)
+    out.putdata(pixels)
+    out.save(f"{ASSETS_DIR}/provinces_unified_sea.png")
 
 
 def find_polygons():
@@ -101,21 +84,31 @@ def find_polygons():
             rgb = tuple(int(line[x]) for x in ('red', 'green', 'blue'))
             province_id = int(line['province'])
             rgb_to_province[rgb] = (province_id, line['name'])
-    im = Image.open(f"{ASSETS_DIR}/provinces.png")
+    # todo unify sea
+    im = Image.open(f"{ASSETS_DIR}/provinces_unified_sea.png")
     arr = np.array(im)
     out = np.vectorize(rgb_to_int32, otypes=[np.int32])(*np.rollaxis(arr, 2, 0))
-    out = out[::-1]
     features = []
-    for i, (s, v) in enumerate(shapes(out)):
+    rounding_factor = 3  # fixme tune these parameters
+    tolerance = 0.1
+    for i, (s, v) in enumerate(shapes(out[::-1])):  # inverts rows to fix y coordinates in leaflet
         rgb = int32_to_rgb(v)
         province_id, name = rgb_to_province[rgb]
-        feature = {"geometry": s, "id": province_id, "properties": {"color": rgb, "name": name}, "type": "Feature"}
-        features.append(feature)
+        if province_id != 0:  # sea tile, not interested in this shape
+            polygon = shapely.geometry.shape(s)
+            rounded = polygon.buffer(rounding_factor, join_style=1).buffer(-rounding_factor, join_style=1)
+            rounded = rounded.simplify(tolerance)
+            rounded = shapely.wkt.loads(shapely.wkt.dumps(rounded, rounding_precision=2))
+            new_geometry = shapely.geometry.mapping(rounded)
+            feature = {"geometry": new_geometry, "id": province_id,
+                       "properties": {"color": rgb, "name": name}, "type": "Feature"}
+            features.append(feature)
 
     feature_collection = geojson.FeatureCollection(sorted(features, key=lambda x: x["id"]))
     with open(f'{ASSETS_DIR}/provinces.geojson', 'w') as f:
         geojson.dump(feature_collection, f)
         print(f"{len(features)} polygons found! GeoJSON dumped.")
+        # todo minify this with mapshaper.org, or see if topojson reduces size enough
 
 
 def rgb_to_int32(r, g, b):
@@ -128,4 +121,5 @@ def int32_to_rgb(n):
 
 
 if __name__ == '__main__':
+    # draw_map_without_sea_tiles()
     find_polygons()
